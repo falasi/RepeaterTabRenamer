@@ -10,6 +10,8 @@ instead of leaving them as "1", "2", "3", ... It does this three ways:
 - **From Proxy's HTTP history**, in one step — select text, hit a hotkey,
   and the request is sent straight to a new, already-named Repeater tab.
 
+[Download the latest release](https://github.com/falasi/RepeaterTabRenamer/releases/latest)
+
 ## Requirements
 
 - Burp Suite with Montoya API support (any release from 2023.9 onward)
