@@ -61,6 +61,8 @@ public class RepeaterTabRenamerExtension implements BurpExtension {
                 SEND_HOTKEY_NAME, SEND_HOTKEY_COMBOS,
                 sendHandler);
 
+        api.extension().registerUnloadingHandler(() -> api.logging().logToOutput("Repeater Tab Renamer unloaded."));
+
         api.logging().logToOutput("Repeater Tab Renamer loaded.");
         logHotKeyStatus(api.logging(), renameReg, sendReg);
     }
