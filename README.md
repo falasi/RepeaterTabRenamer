@@ -1,5 +1,7 @@
 # Repeater Tab Renamer
 
+![Renaming a Repeater tab from selected text](docs/demo.gif)
+
 A Burp Suite extension (Montoya API) that names Repeater tabs for you,
 instead of leaving them as "1", "2", "3", ... It does this three ways:
 
