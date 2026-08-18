@@ -1,0 +1,38 @@
+plugins {
+    id 'java'
+}
+
+group = 'net.falasi.burp'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // Provided by Burp Suite at runtime — not bundled into the extension jar.
+    // Pinned to 2025.12: 2025.11 introduced the ui.hotkey package (registerHotKeyHandler) but
+    // only HotKeyContext.HTTP_MESSAGE_EDITOR; 2025.12 added HotKeyContext.PROXY_HTTP_HISTORY and
+    // HotKeyEvent.selectedRequestResponses(), both needed for the "send to Repeater from Proxy
+    // history" hotkey. All hotkey registration is wrapped in a try/catch at runtime so older
+    // Burp installs still load everything else (auto-naming, right-click menu item) fine.
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2025.12'
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// The extension jar only needs our own classes; Burp supplies the Montoya API
+// classes itself, so a plain jar (no shadowing/fat-jar) is all that's needed.
+jar {
+    archiveBaseName = 'repeater-tab-renamer'
+}
