@@ -1,7 +1,11 @@
 package burp.tabrenamer;
 
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -14,10 +18,18 @@ import java.util.regex.Pattern;
  * apart (e.g. a single "/graphql" or "/api" endpoint handling many
  * different operations) — otherwise every POST tab would end up decorated
  * with body noise even when the path already says everything ("/login").
+ *
+ * <p>This is the single place that knows how name pieces are joined and what a legal tab
+ * name looks like, so the user's {@link NameSeparator} preference is applied consistently to
+ * every route into a name: automatic naming, manually selected text, multi-part names, and
+ * the numeric suffix that distinguishes duplicates.
  */
 public final class TabNameGenerator {
 
     private static final int MAX_LENGTH = 40;
+
+    /** Upper bound on duplicate suffixes; past this, a collision just keeps the base name. */
+    private static final int MAX_DUPLICATE_SUFFIX = 99;
 
     /** Path segments too generic to identify a request on their own. */
     private static final Set<String> GENERIC_SEGMENTS = Set.of(
@@ -36,6 +48,21 @@ public final class TabNameGenerator {
     private static final Pattern JSON_SCALAR_FIELD =
             Pattern.compile("\"([A-Za-z0-9_]+)\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?|true|false)");
 
+    private final Supplier<NameSeparator> separatorSource;
+
+    /** Uses the built-in default separator; handy for tests and for any caller with no settings. */
+    public TabNameGenerator() {
+        this(() -> NameSeparator.HYPHEN);
+    }
+
+    /**
+     * @param separatorSource read on every call rather than once at construction, so a change
+     *                        in Burp's settings panel applies immediately.
+     */
+    public TabNameGenerator(Supplier<NameSeparator> separatorSource) {
+        this.separatorSource = separatorSource;
+    }
+
     /**
      * @param contentTypeName Burp's parsed content-type classification for the body
      *                        (e.g. "JSON", "URL_ENCODED", "NONE", ...), as produced by
@@ -45,19 +72,20 @@ public final class TabNameGenerator {
      *                        be extracted either. May be null.
      */
     public String generate(String method, String pathWithoutQuery, String contentTypeName, String body, String host) {
+        NameSeparator separator = separator();
         String pathName = lastPathSegment(pathWithoutQuery);
         boolean bodyBearing = method != null && !method.equalsIgnoreCase("GET") && !method.equalsIgnoreCase("HEAD");
         boolean hasBody = body != null && !body.isBlank();
 
         String name;
         if (bodyBearing && hasBody && isGeneric(pathName)) {
-            String fromBody = extractFromBody(contentTypeName, body);
+            String fromBody = extractFromBody(contentTypeName, body, separator);
             name = (fromBody != null) ? fromBody : fallbackName(pathName, host);
         } else {
             name = fallbackName(pathName, host);
         }
 
-        return sanitize(name);
+        return sanitize(name, separator);
     }
 
     /** Used whenever there's no usable path segment: the host is a far more useful tab name
@@ -93,11 +121,11 @@ public final class TabNameGenerator {
         return urlDecode(segment);
     }
 
-    private String extractFromBody(String contentTypeName, String body) {
+    private String extractFromBody(String contentTypeName, String body, NameSeparator separator) {
         String type = contentTypeName == null ? "" : contentTypeName.toUpperCase();
 
         if (type.equals("URL_ENCODED") || (type.isEmpty() && looksFormEncoded(body))) {
-            String fromForm = firstFormPair(body);
+            String fromForm = firstFormPair(body, separator);
             if (fromForm != null) {
                 return fromForm;
             }
@@ -107,13 +135,13 @@ public final class TabNameGenerator {
         // unrecognized: many APIs (and GraphQL) send JSON without an accurate
         // Content-Type header, so Burp may classify it as UNKNOWN.
         for (String key : PRIORITY_BODY_KEYS) {
-            String value = findJsonField(body, key);
+            String value = findJsonField(body, key, separator);
             if (value != null && !value.isBlank()) {
                 return value;
             }
         }
 
-        String firstField = firstJsonField(body);
+        String firstField = firstJsonField(body, separator);
         if (firstField != null) {
             return firstField;
         }
@@ -126,7 +154,7 @@ public final class TabNameGenerator {
         return !trimmed.startsWith("{") && !trimmed.startsWith("[") && trimmed.contains("=");
     }
 
-    private String firstFormPair(String body) {
+    private String firstFormPair(String body, NameSeparator separator) {
         String firstPair = body.trim().split("&", 2)[0];
         if (firstPair.isEmpty()) {
             return null;
@@ -134,10 +162,10 @@ public final class TabNameGenerator {
         String[] kv = firstPair.split("=", 2);
         String key = urlDecode(kv[0]);
         String value = kv.length > 1 ? urlDecode(kv[1]) : "";
-        return value.isEmpty() ? key : key + "-" + value;
+        return value.isEmpty() ? key : key + separator.value() + value;
     }
 
-    private String findJsonField(String body, String key) {
+    private String findJsonField(String body, String key, NameSeparator separator) {
         Matcher m = JSON_STRING_FIELD.matcher(body);
         while (m.find()) {
             if (m.group(1).equalsIgnoreCase(key)) {
@@ -147,20 +175,20 @@ public final class TabNameGenerator {
         m = JSON_SCALAR_FIELD.matcher(body);
         while (m.find()) {
             if (m.group(1).equalsIgnoreCase(key)) {
-                return key + "-" + m.group(2);
+                return key + separator.value() + m.group(2);
             }
         }
         return null;
     }
 
-    private String firstJsonField(String body) {
+    private String firstJsonField(String body, NameSeparator separator) {
         Matcher m = JSON_STRING_FIELD.matcher(body);
         if (m.find()) {
-            return m.group(1) + "-" + m.group(2);
+            return m.group(1) + separator.value() + m.group(2);
         }
         m = JSON_SCALAR_FIELD.matcher(body);
         if (m.find()) {
-            return m.group(1) + "-" + m.group(2);
+            return m.group(1) + separator.value() + m.group(2);
         }
         return null;
     }
@@ -178,25 +206,118 @@ public final class TabNameGenerator {
      * name, using the same rules {@link #generate} applies to generated names.
      */
     public String sanitizeForTabName(String raw) {
-        return raw == null ? "request" : sanitize(raw);
+        return raw == null ? "request" : sanitize(raw, separator());
     }
 
-    private String sanitize(String raw) {
+    /**
+     * Joins several separately captured selections into one name, e.g. {@code POST} +
+     * {@code users} + {@code admin} → {@code POST-users-admin}. Each part is cleaned on its own
+     * first, so a part that sanitizes away to nothing is dropped rather than leaving a dangling
+     * separator, and only the joined result is length-capped.
+     */
+    public String joinParts(List<String> parts) {
+        if (parts == null || parts.isEmpty()) {
+            return "request";
+        }
+        NameSeparator separator = separator();
+        String joined = parts.stream()
+                .filter(Objects::nonNull)
+                .map(part -> normalize(part, separator))
+                .filter(part -> !part.isEmpty())
+                .reduce((a, b) -> a + separator.value() + b)
+                .orElse("");
+        return truncate(joined.isEmpty() ? "request" : joined, separator);
+    }
+
+    /**
+     * Returns {@code base} if no tab already carries it, otherwise the first free
+     * {@code base}+separator+number, starting at 2 ({@code api-users}, {@code api-users-2},
+     * {@code api-users-3}).
+     *
+     * <p>Uniqueness is decided against the tab titles that exist right now, not against a
+     * tally the extension keeps: closing {@code api-users} frees the plain name again for the
+     * next request, and a name the user typed by hand is automatically avoided because it's
+     * one of the titles being compared against.
+     */
+    public String uniqueAmong(String base, Collection<String> taken) {
+        if (taken == null || taken.isEmpty()) {
+            return base;
+        }
+        Set<String> takenTitles = new HashSet<>();
+        for (String title : taken) {
+            if (title != null) {
+                takenTitles.add(title.trim());
+            }
+        }
+        if (!takenTitles.contains(base)) {
+            return base;
+        }
+        for (int n = 2; n <= MAX_DUPLICATE_SUFFIX; n++) {
+            String candidate = withOrdinalSuffix(base, n);
+            if (!takenTitles.contains(candidate)) {
+                return candidate;
+            }
+        }
+        return base;
+    }
+
+    /** Appends " separator n", trimming the base first if the suffix wouldn't otherwise fit. */
+    String withOrdinalSuffix(String base, int n) {
+        NameSeparator separator = separator();
+        String suffix = separator.value() + n;
+        String trimmedBase = base;
+        if (trimmedBase.length() + suffix.length() > MAX_LENGTH) {
+            trimmedBase = trimmedBase.substring(0, Math.max(0, MAX_LENGTH - suffix.length()));
+        }
+        trimmedBase = stripSeparator(trimmedBase, separator);
+        return trimmedBase.isEmpty() ? String.valueOf(n) : trimmedBase + suffix;
+    }
+
+    private NameSeparator separator() {
+        NameSeparator separator = separatorSource.get();
+        return separator == null ? NameSeparator.HYPHEN : separator;
+    }
+
+    private String sanitize(String raw, NameSeparator separator) {
+        String cleaned = normalize(raw, separator);
+        return truncate(cleaned.isEmpty() ? "request" : cleaned, separator);
+    }
+
+    /**
+     * Replaces anything that isn't legal in a tab name with the configured separator, collapses
+     * runs of it, and trims it from both ends. Length is deliberately left to
+     * {@link #truncate} so multi-part names can be cleaned piece by piece and capped once.
+     */
+    private String normalize(String raw, NameSeparator separator) {
+        // The '-' stays last inside the character class so it's read as a literal rather than
+        // as the start of a range once SPACE contributes an extra allowed character.
+        String illegal = "[^A-Za-z0-9._" + separator.extraAllowedChars() + "-]+";
         String cleaned = raw.trim()
-                .replaceAll("[^A-Za-z0-9._-]+", "-")
-                .replaceAll("-{2,}", "-");
-        while (cleaned.startsWith("-")) {
-            cleaned = cleaned.substring(1);
+                .replaceAll(illegal, Matcher.quoteReplacement(separator.value()))
+                .replaceAll("(?:" + Pattern.quote(separator.value()) + "){2,}",
+                        Matcher.quoteReplacement(separator.value()));
+        return stripSeparator(cleaned, separator);
+    }
+
+    private String truncate(String name, NameSeparator separator) {
+        if (name.length() <= MAX_LENGTH) {
+            return name;
         }
-        while (cleaned.endsWith("-")) {
-            cleaned = cleaned.substring(0, cleaned.length() - 1);
+        // Cutting mid-name can leave a trailing separator ("api-users-" ), which reads as though
+        // something went missing — drop it.
+        String truncated = stripSeparator(name.substring(0, MAX_LENGTH), separator);
+        return truncated.isEmpty() ? "request" : truncated;
+    }
+
+    private String stripSeparator(String value, NameSeparator separator) {
+        String sep = separator.value();
+        String result = value;
+        while (result.startsWith(sep)) {
+            result = result.substring(sep.length());
         }
-        if (cleaned.isEmpty()) {
-            cleaned = "request";
+        while (result.endsWith(sep)) {
+            result = result.substring(0, result.length() - sep.length());
         }
-        if (cleaned.length() > MAX_LENGTH) {
-            cleaned = cleaned.substring(0, MAX_LENGTH);
-        }
-        return cleaned;
+        return result;
     }
 }

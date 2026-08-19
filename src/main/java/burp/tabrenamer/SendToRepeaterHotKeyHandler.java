@@ -16,9 +16,13 @@ import java.util.Optional;
  * the source request/response viewer — or auto-named the same way {@link RepeaterRequestHandler}
  * would if nothing is selected.
  *
- * <p>Unlike the rest of this extension, this doesn't need {@link RepeaterTabTitler}'s Swing
- * heuristic at all: Montoya's own {@code Repeater.sendToRepeater(request, name)} names the tab
- * it creates directly, since we're the one creating it.
+ * <p>Unlike the rest of this extension, naming here needs no Swing heuristic: Montoya's own
+ * {@code Repeater.sendToRepeater(request, name)} names the tab it creates directly, since we're
+ * the one creating it. {@link RepeaterTabTitler} is consulted only to read the tab titles that
+ * already exist, so sending three requests that all reduce to the same name produces
+ * "api-users", "api-users-2", "api-users-3" instead of three identical tabs. If those titles
+ * can't be read the name is used unchanged, so this can only ever fail back to the old
+ * behavior.
  *
  * <p>Used two ways:
  * <ul>
@@ -34,11 +38,14 @@ import java.util.Optional;
 public final class SendToRepeaterHotKeyHandler implements HotKeyHandler {
 
     private final TabNameGenerator nameGenerator;
+    private final RepeaterTabTitler tabTitler;
     private final Repeater repeater;
     private final Logging logging;
 
-    public SendToRepeaterHotKeyHandler(TabNameGenerator nameGenerator, Repeater repeater, Logging logging) {
+    public SendToRepeaterHotKeyHandler(TabNameGenerator nameGenerator, RepeaterTabTitler tabTitler,
+                                       Repeater repeater, Logging logging) {
         this.nameGenerator = nameGenerator;
+        this.tabTitler = tabTitler;
         this.repeater = repeater;
         this.logging = logging;
     }
@@ -81,8 +88,11 @@ public final class SendToRepeaterHotKeyHandler implements HotKeyHandler {
     }
 
     private void send(Resolved resolved) {
-        repeater.sendToRepeater(resolved.request(), resolved.name());
-        logging.logToOutput("repeater-tab-renamer: sent to Repeater as \"" + resolved.name() + "\".");
+        // Deliberately resolved here rather than at name-generation time: this is the last
+        // moment before the tab exists, so the comparison is against the freshest tab list.
+        String name = nameGenerator.uniqueAmong(resolved.name(), tabTitler.repeaterTabTitles());
+        repeater.sendToRepeater(resolved.request(), name);
+        logging.logToOutput("repeater-tab-renamer: sent to Repeater as \"" + name + "\".");
     }
 
     private Optional<Resolved> resolveFromEditor(MessageEditorHttpRequestResponse editor) {

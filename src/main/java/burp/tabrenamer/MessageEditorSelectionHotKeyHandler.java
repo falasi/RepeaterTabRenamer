@@ -6,6 +6,8 @@ import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
 import burp.api.montoya.ui.hotkey.HotKeyEvent;
 import burp.api.montoya.ui.hotkey.HotKeyHandler;
 
+import javax.swing.SwingUtilities;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -19,24 +21,32 @@ import java.util.Optional;
  *
  * <p>Behavior adapts to where the focused message came from:
  * <ul>
- *   <li>From Repeater — renames the active tab from the selection, via {@link RepeaterTabTitler}
- *       (does nothing if nothing is selected).</li>
+ *   <li>From Repeater — renames the active tab, from the parts staged with
+ *       {@link SelectionPartHotKeyHandler} if there are any, otherwise from the current
+ *       selection (and does nothing if there's neither).</li>
  *   <li>From anywhere else (Proxy history, Intruder attack results, ...) — sends it to a new
  *       Repeater tab, named from the selection or auto-named if nothing is selected, via
  *       {@link SendToRepeaterHotKeyHandler#sendFromEditor}.</li>
  * </ul>
+ *
+ * <p>Staged parts take precedence over a live selection, and are consumed by the rename: the
+ * user went out of their way to stage them, and consuming them means the very next press of
+ * the same key is back to plain selection renaming with no state left behind.
  */
 public final class MessageEditorSelectionHotKeyHandler implements HotKeyHandler {
 
     private final TabNameGenerator nameGenerator;
     private final RepeaterTabTitler tabTitler;
+    private final TabNamePartStore partStore;
     private final SendToRepeaterHotKeyHandler sendHandler;
     private final Logging logging;
 
     public MessageEditorSelectionHotKeyHandler(TabNameGenerator nameGenerator, RepeaterTabTitler tabTitler,
-                                                SendToRepeaterHotKeyHandler sendHandler, Logging logging) {
+                                               TabNamePartStore partStore, SendToRepeaterHotKeyHandler sendHandler,
+                                               Logging logging) {
         this.nameGenerator = nameGenerator;
         this.tabTitler = tabTitler;
+        this.partStore = partStore;
         this.sendHandler = sendHandler;
         this.logging = logging;
     }
@@ -58,11 +68,27 @@ public final class MessageEditorSelectionHotKeyHandler implements HotKeyHandler 
 
     private void renameFromEditor(MessageEditorHttpRequestResponse editor) {
         String selectedText = EditorSelection.extractSelectedText(editor);
-        if (selectedText == null || selectedText.isBlank()) {
-            return;
-        }
+        // Reading the staged parts, deciding, and renaming all happen in one EDT event so they
+        // can't disagree about which tab is active.
+        SwingUtilities.invokeLater(() -> rename(selectedText));
+    }
+
+    private void rename(String selectedText) {
         try {
-            tabTitler.renameActiveTab(nameGenerator.sanitizeForTabName(selectedText), true);
+            Object tabKey = tabTitler.activeTabKey();
+            List<String> parts = partStore.partsFor(tabKey);
+
+            if (!parts.isEmpty()) {
+                tabTitler.renameActiveTabOnEdt(nameGenerator.joinParts(parts), true);
+                partStore.clear(tabKey);
+                logging.logToOutput("repeater-tab-renamer: renamed tab from " + parts.size()
+                        + " staged part(s): " + String.join(" | ", parts));
+                return;
+            }
+
+            if (selectedText != null && !selectedText.isBlank()) {
+                tabTitler.renameActiveTabOnEdt(nameGenerator.sanitizeForTabName(selectedText), true);
+            }
         } catch (Exception e) {
             logging.logToError("repeater-tab-renamer: failed to rename tab from hotkey", e);
         }
