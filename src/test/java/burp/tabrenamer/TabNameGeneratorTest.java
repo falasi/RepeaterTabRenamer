@@ -2,9 +2,11 @@ package burp.tabrenamer;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TabNameGeneratorTest {
 
@@ -199,26 +201,30 @@ class TabNameGeneratorTest {
     }
 
     @Test
-    void duplicateNamesGetNumberedFromTwo() {
-        assertEquals("api-users-2", generator.uniqueAmong("api-users", List.of("api-users")));
-        assertEquals("api-users-3", generator.uniqueAmong("api-users", List.of("api-users", "api-users-2")));
+    void duplicateNamesGetBracketedNumbersFromTwo() {
+        assertEquals("admin (2)", generator.uniqueAmong("admin", List.of("admin")));
+        assertEquals("admin (3)", generator.uniqueAmong("admin", List.of("admin", "admin (2)")));
     }
 
     @Test
     void duplicateNumberingFillsGapsLeftByClosedTabs() {
-        // "api-users-2" was closed: its number is free again, so it is reused rather than skipped.
-        assertEquals("api-users-2", generator.uniqueAmong("api-users", List.of("api-users", "api-users-3")));
+        // "admin (2)" was closed: its number is free again, so it is reused rather than skipped.
+        assertEquals("admin (2)", generator.uniqueAmong("admin", List.of("admin", "admin (3)")));
     }
 
     @Test
     void duplicateNumberingNeverCollidesWithAManuallyTypedName() {
-        assertEquals("api-users-3", generator.uniqueAmong("api-users", List.of("api-users", "api-users-2")));
+        assertEquals("admin (3)", generator.uniqueAmong("admin", List.of("admin", "admin (2)")));
     }
 
     @Test
-    void duplicateSuffixUsesTheConfiguredSeparator() {
-        TabNameGenerator spaced = generatorWith(NameSeparator.SPACE);
-        assertEquals("api users 2", spaced.uniqueAmong("api users", List.of("api users")));
+    void duplicateSuffixIsIndependentOfTheConfiguredSeparator() {
+        assertEquals("POST users (2)", generatorWith(NameSeparator.SPACE)
+                .uniqueAmong("POST users", List.of("POST users")));
+        assertEquals("POST_users (2)", generatorWith(NameSeparator.UNDERSCORE)
+                .uniqueAmong("POST_users", List.of("POST_users")));
+        assertEquals("POST-users (2)", generatorWith(NameSeparator.HYPHEN)
+                .uniqueAmong("POST-users", List.of("POST-users")));
     }
 
     @Test
@@ -226,18 +232,34 @@ class TabNameGeneratorTest {
         String base = "a".repeat(40);
         String result = generator.uniqueAmong(base, List.of(base));
         assertEquals(40, result.length());
-        assertEquals("a".repeat(38) + "-2", result);
+        assertEquals("a".repeat(36) + " (2)", result);
     }
 
     @Test
-    void duplicateSuffixDoesNotLeaveADanglingSeparator() {
-        String base = "a".repeat(37) + "-bb";
-        assertEquals("a".repeat(37) + "-2", generator.uniqueAmong(base, List.of(base)));
+    void twoDigitDuplicateSuffixAlsoStaysWithinTheLengthCap() {
+        String base = "a".repeat(40);
+        List<String> taken = new ArrayList<>(List.of(base));
+        for (int n = 2; n <= 10; n++) {
+            taken.add(generator.withOrdinalSuffix(base, n));
+        }
+        String result = generator.uniqueAmong(base, taken);
+        assertEquals("a".repeat(35) + " (11)", result);
+        assertEquals(40, result.length());
+    }
+
+    @Test
+    void duplicateSuffixDoesNotLeaveADanglingSeparatorOrSpace() {
+        String hyphenated = "a".repeat(35) + "-bbbb";
+        assertEquals("a".repeat(35) + " (2)", generator.uniqueAmong(hyphenated, List.of(hyphenated)));
+
+        TabNameGenerator spaced = generatorWith(NameSeparator.SPACE);
+        String spacedName = "a".repeat(35) + " bbbb";
+        assertEquals("a".repeat(35) + " (2)", spaced.uniqueAmong(spacedName, List.of(spacedName)));
     }
 
     @Test
     void existingTitlesAreComparedIgnoringSurroundingWhitespace() {
-        assertEquals("api-users-2", generator.uniqueAmong("api-users", List.of("  api-users  ")));
+        assertEquals("admin (2)", generator.uniqueAmong("admin", List.of("  admin  ")));
     }
 
     // --- multi-part names -------------------------------------------------------------------
@@ -270,5 +292,42 @@ class TabNameGeneratorTest {
         assertEquals("request", generator.joinParts(List.of()));
         assertEquals("request", generator.joinParts(null));
         assertEquals("request", generator.joinParts(List.of("!!!")));
+    }
+
+    // --- large / hostile bodies -------------------------------------------------------------
+
+    @Test
+    void bodyIsScannedOnlyUpToTheCap() {
+        // "username" is a priority key and would win outright, but it sits past the scan cap,
+        // so the first field inside the cap is used instead of the whole body being walked.
+        String padding = "\"pad\":\"x\",".repeat(1000);
+        String body = "{\"foo\":\"bar\"," + padding + "\"username\":\"bob\"}";
+        assertEquals("foo-bar", generator.generate("POST", "/api", "JSON", body, "example.com"));
+    }
+
+    @Test
+    void aPriorityKeyInsideTheCapIsStillPreferred() {
+        String body = "{\"foo\":\"bar\",\"username\":\"bob\"}";
+        assertEquals("bob", generator.generate("POST", "/api", "JSON", body, "example.com"));
+    }
+
+    @Test
+    void hugeBodyDoesNotStallNameGeneration() {
+        String body = "{\"padding\":\"" + "p".repeat(2_000_000) + "\"}";
+        long start = System.nanoTime();
+        assertEquals("api", generator.generate("POST", "/api", "JSON", body, "example.com"));
+        assertTrue(System.nanoTime() - start < 1_000_000_000L, "naming a 2MB body should not take a second");
+    }
+
+    @Test
+    void bodyOfOnlyControlCharactersFallsBackRatherThanProducingAnEmptyName() {
+        assertEquals("example.com", generator.generate("POST", "/", "JSON", "\u0000\u0001\u0002", "example.com"));
+    }
+
+    @Test
+    void controlCharactersInSelectedTextAreSanitized() {
+        // Replaced by the separator and collapsed, like any other run of illegal characters.
+        assertEquals("a-b", generator.sanitizeForTabName("a\u0000\u0001b"));
+        assertEquals("request", generator.sanitizeForTabName("\u0000\u0001\u0002"));
     }
 }

@@ -77,6 +77,11 @@ public final class TabNamePartStore {
         partsByTab.remove(keyFor(tabKey));
     }
 
+    /** Drops every staged part; called when the extension unloads. */
+    public void clearAll() {
+        partsByTab.clear();
+    }
+
     private Object keyFor(Object tabKey) {
         return tabKey == null ? UNSCOPED : tabKey;
     }

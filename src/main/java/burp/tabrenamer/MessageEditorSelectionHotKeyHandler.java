@@ -53,16 +53,20 @@ public final class MessageEditorSelectionHotKeyHandler implements HotKeyHandler 
 
     @Override
     public void handle(HotKeyEvent event) {
-        Optional<MessageEditorHttpRequestResponse> editorOpt = event.messageEditorRequestResponse();
-        if (editorOpt.isEmpty()) {
-            return;
-        }
-        MessageEditorHttpRequestResponse editor = editorOpt.get();
+        try {
+            Optional<MessageEditorHttpRequestResponse> editorOpt = event.messageEditorRequestResponse();
+            if (editorOpt.isEmpty()) {
+                return;
+            }
+            MessageEditorHttpRequestResponse editor = editorOpt.get();
 
-        if (event.isFromTool(ToolType.REPEATER)) {
-            renameFromEditor(editor);
-        } else {
-            sendHandler.sendFromEditor(editor);
+            if (event.isFromTool(ToolType.REPEATER)) {
+                renameFromEditor(editor);
+            } else {
+                sendHandler.sendFromEditor(editor);
+            }
+        } catch (Exception e) {
+            logging.logToError("repeater-tab-renamer: failed to handle the rename hotkey", e);
         }
     }
 

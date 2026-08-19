@@ -55,11 +55,11 @@ Notes:
 
 | Option | Example |
 | --- | --- |
-| Hyphen (default) | `api-users`, `api-users-2` |
-| Space | `api users`, `api users 2` |
-| Underscore | `api_users`, `api_users_2` |
+| Hyphen (default) | `api-users` |
+| Space | `api users` |
+| Underscore | `api_users` |
 
-It applies everywhere the extension builds a name — automatic naming, sanitized selections, duplicate numbering, and multi-part names — and takes effect immediately, no reload. It only affects separators the extension *inserts*: a path segment that already reads `user-profile` stays `user-profile`.
+It applies everywhere the extension builds a name — automatic naming, sanitized selections, and multi-part names — and takes effect immediately, no reload. The duplicate-number suffix is deliberately *not* affected: it stays `name (2)` under every separator, so the number never reads as another part of the name. It only affects separators the extension *inserts*: a path segment that already reads `user-profile` stays `user-profile`.
 
 The choice is stored in Burp's user settings, so it persists across projects and restarts.
 
@@ -69,18 +69,26 @@ If a generated name is already on another Repeater tab, a number is appended:
 
 ```
 api-users
-api-users-2
-api-users-3
+api-users (2)
+api-users (3)
 ```
 
 This is decided against the tab titles that exist at that moment, not a running tally, which keeps it predictable:
 
 - Close `api-users` and the next matching request takes the plain name again.
-- Close `api-users-2` and the gap is reused before `-4` is handed out.
+- Close `api-users (2)` and the gap is reused before `(4)` is handed out.
 - A name you typed by hand is just another existing title, so numbering routes around it and never rewrites it.
 - Re-sending inside a tab that already holds the name changes nothing — no `-2`, `-3`, `-4` creep.
 
-Numbering applies to names created by "send to Repeater" too, so sending three matching history rows gives three distinguishable tabs.
+Numbering applies to names created by "send to Repeater" too, so sending three matching history rows gives three distinguishable tabs. The suffix format is fixed regardless of your separator choice:
+
+```
+POST users        POST_users
+POST users (2)    POST_users (2)
+POST users (3)    POST_users (3)
+```
+
+On load, the extension prints a short usage summary to its **Output** tab — including the shortcuts as they actually registered — so you don't need this README to get going.
 
 ## Requirements
 
@@ -95,7 +103,7 @@ Numbering applies to names created by "send to Repeater" too, so sending three m
 2. **Body** — if the path is too generic to distinguish requests (`/`, `/api`, `/graphql`, `/v1`, ...) and the request has a body, a likely-identifying field is used instead: `operationName`, `action`, `method`, `type`, `event`, `name`, `username`, `email`, or `id` for JSON; the first `key=value` pair for form-encoded bodies.
 3. **Host** — if neither yields anything usable, the tab is named after the target host, so tabs stay distinguishable across several hosts' root paths.
 
-Names are sanitized (invalid characters → your chosen [separator](#settings)) and capped at 40 characters. Duplicates are numbered — see [Duplicate names](#duplicate-names).
+Names are sanitized (invalid characters → your chosen [separator](#settings)) and capped at 40 characters, including any duplicate suffix — the base name is trimmed so `name (10)` still fits. Only the first 8 KB of a request body is scanned for a name. Duplicates are numbered — see [Duplicate names](#duplicate-names).
 
 ## Limitations
 
@@ -106,7 +114,13 @@ To handle that, the extension walks Burp's Swing UI tree to find and retitle the
 - Renaming happens on **first send**, not when the tab is created.
 - It depends on Burp's internal UI structure, not a documented API. If auto-renaming silently stops working after a Burp update, check the extension's **Output** and **Errors** tabs first.
 
+All of that is confined to one class, `RepeaterUiLocator`, so it's the only file that changes if Montoya ever exposes native tab renaming. It runs only on the Event Dispatch Thread, never throws, holds no strong reference to any Burp component, rejects anything that doesn't look like a Repeater request tab strip, and returns "found nothing" if Burp's layout differs — in which case the tab simply isn't renamed and Burp is left untouched.
+
 The hotkeys and menu item don't have this problem — they're built entirely on documented Montoya APIs.
+
+## Network and data handling
+
+The extension makes no network connections of its own and works fully offline. Request and response bytes are treated as untrusted: text taken from a message (path segments, body fields, your selection) is only ever used as a tab title after being stripped to `A-Za-z0-9._-` plus your separator and capped at 40 characters. Nothing is written to disk beyond the one separator preference, which is stored via Burp's own settings API.
 
 Note that Burp nests every extension's context-menu items under an **Extensions** submenu rather than the top-level right-click menu. That's standard Burp behavior, not something an extension can opt out of; the hotkey skips the navigation.
 

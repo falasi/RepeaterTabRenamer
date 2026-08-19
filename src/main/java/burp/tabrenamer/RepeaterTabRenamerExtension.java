@@ -2,7 +2,6 @@ package burp.tabrenamer;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
-import burp.api.montoya.logging.Logging;
 import burp.api.montoya.ui.hotkey.HotKey;
 import burp.api.montoya.ui.hotkey.HotKeyContext;
 import burp.api.montoya.ui.hotkey.HotKeyHandler;
@@ -14,44 +13,47 @@ import java.util.List;
  * Auto-renames Repeater tabs based on the request they hold: the last path segment for
  * GET-style requests (and for POST/PUT/etc. whose path is already distinctive), falling back
  * to a meaningful field from the request body when the path itself is too generic to tell
- * requests apart (e.g. a single "/graphql" or "/api" endpoint). Names that would collide with
- * a tab that already exists get a number appended ("api-users-2").
+ * requests apart (e.g. a single "/graphql" or "/api" endpoint). A name already in use gets a
+ * "(2)", "(3)" suffix so tabs stay distinguishable.
  *
- * <p>Also lets you name a tab explicitly, via hotkeys (each independently rebindable via
- * Burp's Settings → Hotkeys) that between them cover every place selected text can come from:
+ * <p>Tabs can also be named explicitly, via hotkeys (each independently rebindable via Burp's
+ * Settings → Hotkeys) that between them cover every place selected text can come from:
  * <ul>
- *   <li><b>Ctrl+Alt+R</b> (falls back to Ctrl+Shift+R if taken) — fires in any focused message
- *       editor pane. In Repeater, renames the active tab from the staged parts if there are
- *       any, otherwise from the selection. Anywhere else (Proxy history's viewer, Intruder's,
- *       ...), sends the message to a new, already-named Repeater tab instead. Also reachable
- *       in Repeater via right-click → "Use selection as Repeater tab name".</li>
- *   <li><b>Ctrl+Alt+1</b> / <b>Ctrl+Alt+2</b> / <b>Ctrl+Alt+3</b> — stage the current Repeater
- *       selection as that numbered piece of the next name, so several separate selections can
- *       be combined ("POST" + "users" + "admin" → "POST-users-admin"). Pressing one with
- *       nothing selected clears that piece.</li>
- *   <li><b>Ctrl+Alt+S</b> (falls back to Ctrl+Shift+S if taken) — fires when a Proxy history row
- *       is selected but its editor pane isn't focused (clicking a row keeps focus on the table,
- *       not the viewer). Sends that request to a new, already-named Repeater tab.</li>
+ *   <li><b>Ctrl+Alt+R</b> — fires in any focused message editor pane. In Repeater, renames the
+ *       active tab from the staged parts if there are any, otherwise from the selection.
+ *       Anywhere else (Proxy history's viewer, Intruder's, ...), sends the message to a new,
+ *       already-named Repeater tab instead. Also reachable in Repeater via right-click.</li>
+ *   <li><b>Ctrl+Alt+1/2/3</b> — stage the current Repeater selection as that numbered piece of
+ *       the next name, so separate selections can be combined ("POST" + "users" + "admin" →
+ *       "POST-users-admin"). Pressing one with nothing selected clears that piece.</li>
+ *   <li><b>Ctrl+Alt+S</b> — fires when a Proxy history row is selected but its editor pane isn't
+ *       focused (clicking a row keeps focus on the table, not the viewer). Sends that request to
+ *       a new, already-named Repeater tab.</li>
  * </ul>
- * The split between the editor and history hotkeys exists because Burp scopes hotkeys by
- * whichever specific component has focus, not by tool/tab: a table and its own embedded editor
- * pane report as different hotkey contexts even though they're part of the same view, so one
- * hotkey can't cover both.
+ * Each falls back to a Ctrl+Shift+ variant if its first choice is already taken. The split
+ * between the editor and history hotkeys exists because Burp scopes hotkeys by whichever
+ * specific component has focus, not by tool/tab: a table and its own embedded editor pane
+ * report as different hotkey contexts even though they're part of the same view, so one hotkey
+ * can't cover both.
  *
- * <p>How the pieces of a generated name are joined is a user preference, under
- * Settings → Extensions → Repeater Tab Renamer. See {@link NamingSettings}.
+ * <p>How the pieces of a generated name are joined is a user preference — see
+ * {@link NamingSettings}. All dependence on Burp's internal Swing structure is confined to
+ * {@link RepeaterUiLocator}.
  */
 public class RepeaterTabRenamerExtension implements BurpExtension {
 
     private static final String RENAME_HOTKEY_NAME = "Use selection as Repeater tab name";
     private static final String[] RENAME_HOTKEY_COMBOS = {"Ctrl+Alt+R", "Ctrl+Shift+R"};
-    private static final String RENAME_HOTKEY_CONTEXT_DESC = "in any message editor — renames in Repeater, sends+names elsewhere";
+    private static final String RENAME_HOTKEY_USAGE =
+            "Rename the current Repeater tab from the selected text,\n"
+                    + "or from the staged parts if any.\n"
+                    + "In other tools: send the message to a new, named Repeater tab.";
 
     private static final String SEND_HOTKEY_NAME = "Send to Repeater (named from selection)";
     private static final String[] SEND_HOTKEY_COMBOS = {"Ctrl+Alt+S", "Ctrl+Shift+S"};
-    private static final String SEND_HOTKEY_CONTEXT_DESC = "for a selected Proxy history row (editor pane not focused)";
-
-    private static final String PART_HOTKEY_CONTEXT_DESC = "in Repeater — stage a selection as one piece of the next name";
+    private static final String SEND_HOTKEY_USAGE =
+            "Send to Repeater with automatic naming, for a Proxy history row selected without\n"
+                    + "clicking into its viewer pane.";
 
     @Override
     public void initialize(MontoyaApi api) {
@@ -59,8 +61,9 @@ public class RepeaterTabRenamerExtension implements BurpExtension {
 
         NamingSettings settings = NamingSettings.register(api);
         TabNameGenerator nameGenerator = new TabNameGenerator(settings::separator);
-        RepeaterTabTitler tabTitler = new RepeaterTabTitler(
-                api.userInterface().swingUtils().suiteFrame(), nameGenerator, api.logging());
+        RepeaterUiLocator locator = new RepeaterUiLocator(
+                api.userInterface().swingUtils().suiteFrame(), api.logging());
+        RepeaterTabTitler tabTitler = new RepeaterTabTitler(locator, nameGenerator, api.logging());
         TabNamePartStore partStore = new TabNamePartStore();
         SendToRepeaterHotKeyHandler sendHandler =
                 new SendToRepeaterHotKeyHandler(nameGenerator, tabTitler, api.repeater(), api.logging());
@@ -73,27 +76,35 @@ public class RepeaterTabRenamerExtension implements BurpExtension {
         // combos already taken by another extension) must not stop the others from registering,
         // and each result is reported on its own rather than lumped into a single pass/fail.
         List<HotKeyStatus> statuses = new ArrayList<>();
-        statuses.add(new HotKeyStatus(RENAME_HOTKEY_NAME, RENAME_HOTKEY_CONTEXT_DESC,
+        statuses.add(new HotKeyStatus(RENAME_HOTKEY_NAME, RENAME_HOTKEY_USAGE,
                 registerHotKey(api, HotKeyContext.HTTP_MESSAGE_EDITOR, RENAME_HOTKEY_NAME, RENAME_HOTKEY_COMBOS,
                         new MessageEditorSelectionHotKeyHandler(nameGenerator, tabTitler, partStore, sendHandler, api.logging()))));
-        statuses.add(new HotKeyStatus(SEND_HOTKEY_NAME, SEND_HOTKEY_CONTEXT_DESC,
-                registerHotKey(api, HotKeyContext.PROXY_HTTP_HISTORY, SEND_HOTKEY_NAME, SEND_HOTKEY_COMBOS,
-                        sendHandler)));
 
         for (int slot = 1; slot <= TabNamePartStore.PART_COUNT; slot++) {
             String name = "Set Repeater tab name part " + slot;
             // Ctrl+Alt+<digit> is unclaimed in stock Burp (its own shortcuts are letter-based),
             // and keeps the whole feature on one modifier pair with the rename key it feeds.
             String[] combos = {"Ctrl+Alt+" + slot, "Ctrl+Shift+" + slot};
-            statuses.add(new HotKeyStatus(name, PART_HOTKEY_CONTEXT_DESC,
+            String usage = "Store the Repeater selection as name part " + slot
+                    + (slot == 1 ? " (press with nothing selected to clear it)" : "");
+            statuses.add(new HotKeyStatus(name, usage,
                     registerHotKey(api, HotKeyContext.HTTP_MESSAGE_EDITOR, name, combos,
                             new SelectionPartHotKeyHandler(slot, partStore, tabTitler, api.logging()))));
         }
 
-        api.extension().registerUnloadingHandler(() -> api.logging().logToOutput("Repeater Tab Renamer unloaded."));
+        statuses.add(new HotKeyStatus(SEND_HOTKEY_NAME, SEND_HOTKEY_USAGE,
+                registerHotKey(api, HotKeyContext.PROXY_HTTP_HISTORY, SEND_HOTKEY_NAME, SEND_HOTKEY_COMBOS,
+                        sendHandler)));
 
-        api.logging().logToOutput("Repeater Tab Renamer loaded.");
-        logHotKeyStatus(api.logging(), statuses);
+        // Burp deregisters our handlers itself; what it can't know about is the state we hold,
+        // so both caches are dropped explicitly rather than left to reload-time garbage.
+        api.extension().registerUnloadingHandler(() -> {
+            partStore.clearAll();
+            locator.forget();
+            api.logging().logToOutput("Repeater Tab Renamer unloaded.");
+        });
+
+        api.logging().logToOutput(usageBanner(statuses));
     }
 
     private enum HotKeyResult {
@@ -108,7 +119,7 @@ public class RepeaterTabRenamerExtension implements BurpExtension {
     private record HotKeyRegistration(HotKeyResult result, String combo) {
     }
 
-    private record HotKeyStatus(String name, String contextDesc, HotKeyRegistration registration) {
+    private record HotKeyStatus(String name, String usage, HotKeyRegistration registration) {
     }
 
     /**
@@ -133,39 +144,27 @@ public class RepeaterTabRenamerExtension implements BurpExtension {
     }
 
     /**
-     * Montoya's {@code HotKey}/{@code Registration} types don't expose a getter for a hotkey's
-     * current live binding — only whichever combo we successfully requested at registration. So
-     * a successful registration can only ever be reported with that combo, with an explicit note
-     * that it may have been rebound since; claiming to show the "current" binding would be a
-     * guess dressed up as fact.
+     * Builds the load-time usage banner. Shortcuts are reported as actually registered, never as
+     * the requested constants: a combo already claimed elsewhere falls back to its alternative,
+     * and printing the first choice would tell the user to press a key that does nothing. Montoya
+     * exposes no getter for a hotkey's live binding, so a combo the user rebinds after load can't
+     * be reflected here — hence the pointer to Settings > Hotkeys.
      */
-    private void logHotKeyStatus(Logging logging, List<HotKeyStatus> statuses) {
-        StringBuilder message = new StringBuilder("Hotkeys (bindings below reflect what registered just now — check Settings > Hotkeys if you've rebound one since):");
-        for (HotKeyStatus status : statuses) {
-            message.append('\n').append(statusLine(status));
-        }
-
-        boolean anyUnsupported = statuses.stream().anyMatch(s -> s.registration().result() == HotKeyResult.UNSUPPORTED);
-        boolean anyFailed = statuses.stream().anyMatch(s -> s.registration().result() == HotKeyResult.FAILED);
-
-        if (anyUnsupported) {
-            message.append("\nHotkeys need a Burp release supporting montoya-api 2025.12+; the right-click "
-                    + "\"" + RENAME_HOTKEY_NAME + "\" menu item still works regardless.");
-        }
-        if (anyFailed) {
-            message.append("\nA hotkey failed to register — every candidate combo is already bound to "
-                    + "something else. See the Errors log for details, or bind it manually via Settings > Hotkeys.");
-        }
-
-        logging.logToOutput(message.toString());
+    private String usageBanner(List<HotKeyStatus> statuses) {
+        List<UsageBanner.Shortcut> shortcuts = statuses.stream()
+                .map(status -> new UsageBanner.Shortcut(comboLabel(status.registration()), status.usage()))
+                .toList();
+        return UsageBanner.render(
+                shortcuts,
+                statuses.stream().anyMatch(s -> s.registration().result() == HotKeyResult.UNSUPPORTED),
+                statuses.stream().anyMatch(s -> s.registration().result() == HotKeyResult.FAILED));
     }
 
-    private String statusLine(HotKeyStatus status) {
-        HotKeyRegistration reg = status.registration();
-        return switch (reg.result()) {
-            case REGISTERED -> "  " + reg.combo() + "  \"" + status.name() + "\" (" + status.contextDesc() + ")";
-            case UNSUPPORTED -> "  (unavailable on this Burp version)  \"" + status.name() + "\"";
-            case FAILED -> "  (failed to register — see Errors)  \"" + status.name() + "\"";
+    private String comboLabel(HotKeyRegistration registration) {
+        return switch (registration.result()) {
+            case REGISTERED -> registration.combo();
+            case UNSUPPORTED -> "(unavailable)";
+            case FAILED -> "(unregistered)";
         };
     }
 }

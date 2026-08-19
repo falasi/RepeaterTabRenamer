@@ -55,8 +55,6 @@ public final class SendToRepeaterHotKeyHandler implements HotKeyHandler {
         try {
             Optional<MessageEditorHttpRequestResponse> editorOpt = event.messageEditorRequestResponse();
             List<HttpRequestResponse> selected = event.selectedRequestResponses();
-            logging.logToOutput("repeater-tab-renamer: send-to-repeater hotkey fired (message editor focused: "
-                    + editorOpt.isPresent() + ", history rows selected: " + selected.size() + ").");
 
             Optional<Resolved> resolved = editorOpt.isPresent()
                     ? resolveFromEditor(editorOpt.get())
@@ -90,7 +88,7 @@ public final class SendToRepeaterHotKeyHandler implements HotKeyHandler {
     private void send(Resolved resolved) {
         // Deliberately resolved here rather than at name-generation time: this is the last
         // moment before the tab exists, so the comparison is against the freshest tab list.
-        String name = nameGenerator.uniqueAmong(resolved.name(), tabTitler.repeaterTabTitles());
+        String name = tabTitler.uniqueNewTabName(resolved.name());
         repeater.sendToRepeater(resolved.request(), name);
         logging.logToOutput("repeater-tab-renamer: sent to Repeater as \"" + name + "\".");
     }

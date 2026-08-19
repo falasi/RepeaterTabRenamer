@@ -9,6 +9,7 @@ import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
 
 import javax.swing.JMenuItem;
 import java.awt.Component;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -42,6 +43,17 @@ public final class RepeaterSelectionContextMenuProvider implements ContextMenuIt
 
     @Override
     public List<Component> provideMenuItems(ContextMenuEvent event) {
+        // Burp builds its context menu by calling this; letting anything escape would break the
+        // menu for every tool, so the whole method is guarded and degrades to "no extra items".
+        try {
+            return menuItems(event);
+        } catch (Exception e) {
+            logging.logToError("repeater-tab-renamer: failed to build context menu items", e);
+            return List.of();
+        }
+    }
+
+    private List<Component> menuItems(ContextMenuEvent event) {
         if (!event.isFromTool(ToolType.REPEATER)) {
             return List.of();
         }
@@ -88,11 +100,14 @@ public final class RepeaterSelectionContextMenuProvider implements ContextMenuIt
     }
 
     private JMenuItem stagedPartsItem(Object tabKey, List<String> parts) {
+        // Weak so a menu item Burp happens to retain can't keep a closed Repeater tab's
+        // component alive; a collected key just means there are no parts left to clear.
+        WeakReference<Object> tabRef = new WeakReference<>(tabKey);
         JMenuItem item = new JMenuItem("Rename Repeater tab: " + nameGenerator.joinParts(parts));
         item.addActionListener(e -> {
             try {
                 tabTitler.renameActiveTab(nameGenerator.joinParts(parts), true);
-                partStore.clear(tabKey);
+                partStore.clear(tabRef.get());
             } catch (Exception ex) {
                 logging.logToError("repeater-tab-renamer: failed to rename tab from staged parts", ex);
             }

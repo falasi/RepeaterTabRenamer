@@ -31,6 +31,14 @@ public final class TabNameGenerator {
     /** Upper bound on duplicate suffixes; past this, a collision just keeps the base name. */
     private static final int MAX_DUPLICATE_SUFFIX = 99;
 
+    /**
+     * How many characters of a request body are scanned for a name-worthy field. A body can be
+     * megabytes (file uploads, bulk imports) and this runs on Burp's HTTP thread for every
+     * Repeater send, so the scan is bounded: an identifying field that isn't in the first few KB
+     * wasn't going to make a good tab name anyway.
+     */
+    private static final int MAX_BODY_SCAN = 8192;
+
     /** Path segments too generic to identify a request on their own. */
     private static final Set<String> GENERIC_SEGMENTS = Set.of(
             "", "api", "graphql", "gql", "rpc", "query", "index", "index.php",
@@ -121,8 +129,9 @@ public final class TabNameGenerator {
         return urlDecode(segment);
     }
 
-    private String extractFromBody(String contentTypeName, String body, NameSeparator separator) {
+    private String extractFromBody(String contentTypeName, String fullBody, NameSeparator separator) {
         String type = contentTypeName == null ? "" : contentTypeName.toUpperCase();
+        String body = fullBody.length() > MAX_BODY_SCAN ? fullBody.substring(0, MAX_BODY_SCAN) : fullBody;
 
         if (type.equals("URL_ENCODED") || (type.isEmpty() && looksFormEncoded(body))) {
             String fromForm = firstFormPair(body, separator);
@@ -231,8 +240,8 @@ public final class TabNameGenerator {
 
     /**
      * Returns {@code base} if no tab already carries it, otherwise the first free
-     * {@code base}+separator+number, starting at 2 ({@code api-users}, {@code api-users-2},
-     * {@code api-users-3}).
+     * {@code base (n)}, starting at 2 ({@code api-users}, {@code api-users (2)},
+     * {@code api-users (3)}).
      *
      * <p>Uniqueness is decided against the tab titles that exist right now, not against a
      * tally the extension keeps: closing {@code api-users} frees the plain name again for the
@@ -261,16 +270,23 @@ public final class TabNameGenerator {
         return base;
     }
 
-    /** Appends " separator n", trimming the base first if the suffix wouldn't otherwise fit. */
+    /**
+     * Appends " (n)", trimming the base first if the suffix wouldn't otherwise fit inside the
+     * length cap.
+     *
+     * <p>Deliberately fixed rather than following the {@link NameSeparator} preference: the
+     * number isn't part of the name, it's a disambiguator, and a bracketed suffix stays visibly
+     * distinct from the name's own words whichever separator is in use — "POST_users_2" reads
+     * like a third name part, "POST_users (2)" doesn't.
+     */
     String withOrdinalSuffix(String base, int n) {
-        NameSeparator separator = separator();
-        String suffix = separator.value() + n;
+        String suffix = " (" + n + ")";
         String trimmedBase = base;
         if (trimmedBase.length() + suffix.length() > MAX_LENGTH) {
             trimmedBase = trimmedBase.substring(0, Math.max(0, MAX_LENGTH - suffix.length()));
         }
-        trimmedBase = stripSeparator(trimmedBase, separator);
-        return trimmedBase.isEmpty() ? String.valueOf(n) : trimmedBase + suffix;
+        trimmedBase = trimNameEnd(trimmedBase, separator());
+        return trimmedBase.isEmpty() ? "request" + suffix : trimmedBase + suffix;
     }
 
     private NameSeparator separator() {
@@ -305,8 +321,19 @@ public final class TabNameGenerator {
         }
         // Cutting mid-name can leave a trailing separator ("api-users-" ), which reads as though
         // something went missing — drop it.
-        String truncated = stripSeparator(name.substring(0, MAX_LENGTH), separator);
+        String truncated = trimNameEnd(name.substring(0, MAX_LENGTH), separator);
         return truncated.isEmpty() ? "request" : truncated;
+    }
+
+    /** Strips trailing separators and whitespace left behind by a mid-name cut, in any order. */
+    private String trimNameEnd(String value, NameSeparator separator) {
+        String previous;
+        String result = value;
+        do {
+            previous = result;
+            result = stripSeparator(result.strip(), separator);
+        } while (!result.equals(previous));
+        return result;
     }
 
     private String stripSeparator(String value, NameSeparator separator) {

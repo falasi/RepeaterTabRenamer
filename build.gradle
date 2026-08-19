@@ -14,6 +14,13 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+// Sources contain non-ASCII characters in comments; pin the encoding so a clean checkout
+// compiles identically regardless of the building machine's platform default.
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:all'
+}
+
 dependencies {
     // Provided by Burp Suite at runtime — not bundled into the extension jar.
     // Pinned to 2025.12: 2025.11 introduced the ui.hotkey package (registerHotKeyHandler) but
