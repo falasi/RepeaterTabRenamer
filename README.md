@@ -14,7 +14,7 @@ Burp Suite → **Extensions → Installed → Add** → Extension type: **Java**
 
 Four ways to get a named tab:
 
-- **Automatically** — when you send a request from Repeater, the tab is named from the request (path, or a body field, or the host). See [Naming rules](#naming-rules).
+- **Automatically** — when you send a request from Repeater, the tab is named from the request, by default as `POST | /apps/emailShare/postMessage`. See [Naming rules](#naming-rules).
 - **From a selection in Repeater** — select text, then press `Ctrl+Alt+R` or right-click → **Extensions → Repeater Tab Renamer → Use selection as Repeater tab name**.
 - **From several selections** — stage two or three pieces with `Ctrl+Alt+1` / `2` / `3`, then press `Ctrl+Alt+R` to combine them, joined with your chosen separator. See [Multi-part names](#multi-part-names).
 - **From Proxy HTTP history** — select text (or just a row) and press a hotkey to send it straight to a new, already-named Repeater tab.
@@ -49,21 +49,41 @@ Notes:
 - Staged pieces belong to the Repeater tab you staged them in, so they can't leak into another tab. Closing the tab discards them.
 - Re-press a number to replace that piece; press it with nothing selected to clear it.
 - `Ctrl+Alt+R` consumes the pieces, so the next press is back to plain selection renaming.
-- The extension's **Output** tab echoes each piece as you stage it, and the right-click menu shows the pending name while pieces are staged.
+- The right-click menu shows the pending name while pieces are staged. Staging doesn't write to the **Output** tab.
 
 ## Settings
 
-**Settings → Extensions → Repeater Tab Renamer** has one preference: how generated name pieces are joined.
+**Settings → Extensions → Repeater Tab Renamer** has two preferences. Both take effect immediately, with no reload, and are stored in Burp's user settings so they persist across projects and restarts.
+
+### Automatic naming format
+
+Controls only how tabs are named *automatically*, when you send a request. Names you build from a selection or from staged parts are always exactly what you selected.
+
+| Option | `POST /apps/emailShare/postMessage?mailboxid=123` becomes |
+| --- | --- |
+| `Method and path` (default) | `POST \| /apps/emailShare/postMessage` |
+| `Last path segment` | `postMessage` |
+| `Path, body field, or host` | `postMessage` — see [Naming rules](#naming-rules) |
+
+`Method and path` is the default because it stays useful as a session grows: the method tells a `GET` from the `POST` to the same endpoint, and the full path tells `/users/create` from `/admin/create` — exactly where last-segment naming starts producing tabs you can't tell apart. The query string, scheme and host are never included, and a redundant trailing `/` is dropped.
+
+### Name separator
+
+Joins the pieces of a generated name, and replaces characters that aren't legal in a tab name.
 
 | Option | Example |
 | --- | --- |
-| `Hyphen` (default) | `api-users` |
-| `Space` | `api users` |
-| `Underscore` | `api_users` |
+| `Hyphen` (default) | `POST-users-admin` |
+| `Space` | `POST users admin` |
+| `Underscore` | `POST_users_admin` |
+| `Pipe` | `POST \| users \| admin` |
 
-It applies everywhere the extension builds a name — automatic naming, sanitized selections, and multi-part names — and takes effect immediately, no reload. The duplicate-number suffix is deliberately *not* affected: it stays `name (2)` under every separator, so the number never reads as another part of the name. It only affects separators the extension *inserts*: a path segment that already reads `user-profile` stays `user-profile`.
+`Pipe` pads itself with spaces, because `POST | users | admin` reads better than `POST|users|admin`. It replaces illegal characters with a *space* rather than a pipe — a pipe implies a boundary, and stamping one over stray punctuation inside a single value would invent structure that isn't there.
 
-The choice is stored in Burp's user settings, so it persists across projects and restarts.
+The separator only affects characters the extension *inserts*: a path segment that already reads `user-profile` stays `user-profile`. Two things ignore it entirely, because both are structure rather than words:
+
+- the duplicate suffix, always `name (2)`;
+- the divider in `Method and path`, always ` | ` — `POST | /apps/emailShare` is far easier to read than `POST-/apps/emailShare`.
 
 ## Duplicate names
 
@@ -93,7 +113,7 @@ POST users (3)    POST_users (3)
 On load, the extension prints a short reminder to its **Output** tab — the shortcuts as they actually registered, and where the separator setting lives:
 
 ```text
-Repeater Tab Renamer v1.2.0 enabled
+Repeater Tab Renamer v1.3.0 enabled
 
 Ctrl+Alt+R         Rename from selection / staged parts
 Ctrl+Alt+1/2/3     Stage name parts
@@ -102,6 +122,8 @@ Ctrl+Alt+Shift+R   Send to Repeater with automatic naming
 Separator: Settings > Extensions > Repeater Tab Renamer
 Hotkeys can be changed under Settings > Hotkeys.
 ```
+
+That banner, genuine warnings and unexpected errors are all the extension writes to **Output** — staging a part or renaming a tab succeeds silently. While parts are staged, the right-click menu shows the pending name.
 
 ## Requirements
 
@@ -112,11 +134,13 @@ Hotkeys can be changed under Settings > Hotkeys.
 
 ## Naming rules
 
+These apply to the `Path, body field, or host` format. The other two formats are described under [Settings](#settings).
+
 1. **Path** — the last segment of the request path, e.g. `/api/users/login` → `login`. Applies to every method.
 2. **Body** — if the path is too generic to distinguish requests (`/`, `/api`, `/graphql`, `/v1`, ...) and the request has a body, a likely-identifying field is used instead: `operationName`, `action`, `method`, `type`, `event`, `name`, `username`, `email`, or `id` for JSON; the first `key=value` pair for form-encoded bodies.
 3. **Host** — if neither yields anything usable, the tab is named after the target host, so tabs stay distinguishable across several hosts' root paths.
 
-Names are sanitized (invalid characters → your chosen [separator](#settings)) and capped at 40 characters, including any duplicate suffix — the base name is trimmed so `name (10)` still fits. Only the first 8 KB of a request body is scanned for a name. Duplicates are numbered — see [Duplicate names](#duplicate-names).
+Names are sanitized (invalid characters → your chosen [separator](#name-separator)) and capped at 40 characters, including any duplicate suffix — the base name is trimmed so `name (10)` still fits. A `Method and path` name that doesn't fit loses whole segments from the *front*, marked with `…`, so the endpoint at the end survives: `POST | …/attachments/postMessage`. Only the first 8 KB of a request body is scanned for a name. Duplicates are numbered — see [Duplicate names](#duplicate-names).
 
 ## Limitations
 

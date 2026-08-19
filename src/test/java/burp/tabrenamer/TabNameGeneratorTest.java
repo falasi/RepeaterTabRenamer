@@ -10,7 +10,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TabNameGeneratorTest {
 
-    private final TabNameGenerator generator = new TabNameGenerator();
+    // These cover the "path, body field, or host" hierarchy, which is one of three formats now.
+    private final TabNameGenerator generator = smartGenerator(NameSeparator.HYPHEN);
+
+    private static TabNameGenerator smartGenerator(NameSeparator separator) {
+        return new TabNameGenerator(() -> new NamingConfig(separator, NamingFormat.SMART));
+    }
 
     @Test
     void getUsesLastPathSegment() {
@@ -107,7 +112,15 @@ class TabNameGeneratorTest {
 
     @Test
     void nameStripsIllegalCharacters() {
-        assertEquals("a-b-c", generator.generate("GET", "/a b?c", "NONE", "", "example.com"));
+        assertEquals("a-b-c", generator.generate("GET", "/a b*c", "NONE", "", "example.com"));
+    }
+
+    @Test
+    void anyQueryStringThatSneaksIntoThePathIsDropped() {
+        // Montoya passes a path with the query already removed; this keeps every format
+        // behaving the same if a caller ever passes a raw target instead.
+        assertEquals("postMessage",
+                generator.generate("GET", "/apps/postMessage?mailboxid=123", "NONE", "", "example.com"));
     }
 
     @Test
@@ -129,7 +142,7 @@ class TabNameGeneratorTest {
     // --- separator preference ---------------------------------------------------------------
 
     private TabNameGenerator generatorWith(NameSeparator separator) {
-        return new TabNameGenerator(() -> separator);
+        return smartGenerator(separator);
     }
 
     @Test
@@ -147,7 +160,7 @@ class TabNameGeneratorTest {
     @Test
     void spaceSeparatorReplacesIllegalCharactersWithSpaces() {
         assertEquals("a b c", generatorWith(NameSeparator.SPACE)
-                .generate("GET", "/a b?c", "NONE", "", "example.com"));
+                .generate("GET", "/a b*c", "NONE", "", "example.com"));
     }
 
     @Test
@@ -174,16 +187,17 @@ class TabNameGeneratorTest {
     @Test
     void separatorIsReadPerCallSoSettingChangesApplyImmediately() {
         NameSeparator[] current = {NameSeparator.HYPHEN};
-        TabNameGenerator live = new TabNameGenerator(() -> current[0]);
+        TabNameGenerator live = new TabNameGenerator(() -> new NamingConfig(current[0], NamingFormat.SMART));
         assertEquals("user-bob", live.generate("POST", "/", "URL_ENCODED", "user=bob", "example.com"));
         current[0] = NameSeparator.SPACE;
         assertEquals("user bob", live.generate("POST", "/", "URL_ENCODED", "user=bob", "example.com"));
     }
 
     @Test
-    void nullSeparatorSupplierValueFallsBackToHyphen() {
-        assertEquals("user-bob", new TabNameGenerator(() -> null)
-                .generate("POST", "/", "URL_ENCODED", "user=bob", "example.com"));
+    void nullConfigSupplierValueFallsBackToTheDefaults() {
+        // Defaults are method-and-path, so a null config must still produce a usable name.
+        assertEquals("POST | /api", new TabNameGenerator(() -> null)
+                .generate("POST", "/api", "URL_ENCODED", "user=bob", "example.com"));
     }
 
     // --- duplicate names --------------------------------------------------------------------

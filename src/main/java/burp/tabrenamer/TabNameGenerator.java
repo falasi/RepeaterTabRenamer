@@ -10,19 +10,20 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Turns a request (method, path, content-type, body) into a short, readable
- * Repeater tab name.
+ * The single place a Repeater tab name is constructed.
  *
- * Strategy: use the last URL path segment when it's distinctive. Only fall
- * back to inspecting the body when the path itself doesn't tell requests
- * apart (e.g. a single "/graphql" or "/api" endpoint handling many
- * different operations) — otherwise every POST tab would end up decorated
- * with body noise even when the path already says everything ("/login").
+ * <p>Every route into a name goes through here — automatic naming on send, a manual selection,
+ * several staged selections combined, and the name given to a tab created by "send to Repeater"
+ * — so the user's preferences can only ever be applied consistently. Handlers deliberately hold
+ * no formatting logic of their own; that is what previously let the separator apply to some
+ * names and not others.
  *
- * <p>This is the single place that knows how name pieces are joined and what a legal tab
- * name looks like, so the user's {@link NameSeparator} preference is applied consistently to
- * every route into a name: automatic naming, manually selected text, multi-part names, and
- * the numeric suffix that distinguishes duplicates.
+ * <p>Preferences arrive as a {@link NamingConfig} read fresh on every call, so a change in
+ * Burp's settings panel affects the next name with no reload.
+ *
+ * <p>Two things are exempt from the separator preference by design, because both are structure
+ * rather than words: the number appended to a duplicate ({@code name (2)}) and the divider in
+ * {@link NamingFormat#METHOD_AND_PATH} ({@code POST | /path}).
  */
 public final class TabNameGenerator {
 
@@ -38,6 +39,12 @@ public final class TabNameGenerator {
      * wasn't going to make a good tab name anyway.
      */
     private static final int MAX_BODY_SCAN = 8192;
+
+    /** Fixed divider between method and path — see the class note on what the preference governs. */
+    private static final String METHOD_PATH_DIVIDER = " | ";
+
+    /** Marks a path that had to be shortened to fit. */
+    private static final String ELISION = "…";
 
     /** Path segments too generic to identify a request on their own. */
     private static final Set<String> GENERIC_SEGMENTS = Set.of(
@@ -56,19 +63,19 @@ public final class TabNameGenerator {
     private static final Pattern JSON_SCALAR_FIELD =
             Pattern.compile("\"([A-Za-z0-9_]+)\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?|true|false)");
 
-    private final Supplier<NameSeparator> separatorSource;
+    private final Supplier<NamingConfig> configSource;
 
-    /** Uses the built-in default separator; handy for tests and for any caller with no settings. */
+    /** Uses the built-in defaults; for tests and any caller with no settings available. */
     public TabNameGenerator() {
-        this(() -> NameSeparator.HYPHEN);
+        this(() -> NamingConfig.DEFAULT);
     }
 
     /**
-     * @param separatorSource read on every call rather than once at construction, so a change
-     *                        in Burp's settings panel applies immediately.
+     * @param configSource read on every call rather than once at construction, so a change in
+     *                     Burp's settings panel applies immediately
      */
-    public TabNameGenerator(Supplier<NameSeparator> separatorSource) {
-        this.separatorSource = separatorSource;
+    public TabNameGenerator(Supplier<NamingConfig> configSource) {
+        this.configSource = configSource;
     }
 
     /**
@@ -80,7 +87,107 @@ public final class TabNameGenerator {
      *                        be extracted either. May be null.
      */
     public String generate(String method, String pathWithoutQuery, String contentTypeName, String body, String host) {
-        NameSeparator separator = separator();
+        NamingConfig config = config();
+        return switch (config.format()) {
+            case METHOD_AND_PATH -> methodAndPath(method, pathWithoutQuery, config.separator());
+            case LAST_PATH_SEGMENT -> sanitize(fallbackName(lastPathSegment(pathWithoutQuery), host), config.separator());
+            case SMART -> smartName(method, pathWithoutQuery, contentTypeName, body, host, config.separator());
+        };
+    }
+
+    /**
+     * {@code POST | /apps/emailShare/postMessage} — method plus the full path, query string and
+     * host excluded.
+     *
+     * <p>A path too long to fit loses whole segments from the <em>front</em>, marked with an
+     * ellipsis: the tail names the actual endpoint, so {@code POST | …/postMessage} still
+     * identifies the request where {@code POST | /apps/emailSha} would not.
+     */
+    private String methodAndPath(String method, String pathWithoutQuery, NameSeparator separator) {
+        String path = normalizePath(pathWithoutQuery, separator);
+        String verb = normalizeMethod(method);
+        if (verb.isEmpty()) {
+            return truncate(path, separator);
+        }
+
+        String prefix = verb + METHOD_PATH_DIVIDER;
+        int pathBudget = MAX_LENGTH - prefix.length();
+        if (pathBudget <= 0) {
+            return truncate(verb, separator);
+        }
+        return prefix + fitPath(path, pathBudget);
+    }
+
+    /** Keeps as many whole trailing segments as fit, prefixed with an ellipsis. */
+    private String fitPath(String path, int budget) {
+        if (path.length() <= budget) {
+            return path;
+        }
+        int segmentBudget = budget - ELISION.length();
+        if (segmentBudget <= 0) {
+            return path.substring(path.length() - budget);
+        }
+
+        String best = "";
+        for (int slash = path.length(); slash > 0; ) {
+            slash = path.lastIndexOf('/', slash - 1);
+            if (slash < 0) {
+                break;
+            }
+            String candidate = path.substring(slash);
+            if (candidate.length() > segmentBudget) {
+                break;
+            }
+            best = candidate;
+        }
+        if (best.isEmpty()) {
+            // Even one segment is too long: keep its tail, which holds the distinguishing part.
+            best = path.substring(path.length() - segmentBudget);
+        }
+        return ELISION + best;
+    }
+
+    /** Leading slash, no query, no fragment, no redundant trailing slash. */
+    private String normalizePath(String pathWithoutQuery, NameSeparator separator) {
+        if (pathWithoutQuery == null || pathWithoutQuery.isBlank()) {
+            return "/";
+        }
+        String path = pathWithoutQuery.trim();
+        int queryIdx = path.indexOf('?');
+        if (queryIdx >= 0) {
+            path = path.substring(0, queryIdx);
+        }
+        int hashIdx = path.indexOf('#');
+        if (hashIdx >= 0) {
+            path = path.substring(0, hashIdx);
+        }
+        path = urlDecode(path);
+        // Sanitised with "/" kept, so a path stays a path while anything not legal in a tab
+        // title still becomes the user's filler.
+        path = normalize(path, separator.filler(), separator.extraAllowedChars() + "/");
+        while (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+        return path;
+    }
+
+    private String normalizeMethod(String method) {
+        if (method == null) {
+            return "";
+        }
+        String verb = method.trim().replaceAll("[^A-Za-z0-9]", "");
+        return verb.length() > 10 ? verb.substring(0, 10) : verb;
+    }
+
+    /**
+     * The original hierarchy: last path segment, dropping to a body field when the path is too
+     * generic to tell requests apart, then to the host.
+     */
+    private String smartName(String method, String pathWithoutQuery, String contentTypeName,
+                             String body, String host, NameSeparator separator) {
         String pathName = lastPathSegment(pathWithoutQuery);
         boolean bodyBearing = method != null && !method.equalsIgnoreCase("GET") && !method.equalsIgnoreCase("HEAD");
         boolean hasBody = body != null && !body.isBlank();
@@ -92,7 +199,6 @@ public final class TabNameGenerator {
         } else {
             name = fallbackName(pathName, host);
         }
-
         return sanitize(name, separator);
     }
 
@@ -117,6 +223,12 @@ public final class TabNameGenerator {
             return "";
         }
         String path = pathWithoutQuery;
+        // Montoya hands us a path with the query already removed, but strip it anyway so every
+        // format behaves the same if a caller ever passes a raw target.
+        int queryIdx = path.indexOf('?');
+        if (queryIdx >= 0) {
+            path = path.substring(0, queryIdx);
+        }
         int hashIdx = path.indexOf('#');
         if (hashIdx >= 0) {
             path = path.substring(0, hashIdx);
@@ -171,7 +283,7 @@ public final class TabNameGenerator {
         String[] kv = firstPair.split("=", 2);
         String key = urlDecode(kv[0]);
         String value = kv.length > 1 ? urlDecode(kv[1]) : "";
-        return value.isEmpty() ? key : key + separator.value() + value;
+        return value.isEmpty() ? key : key + separator.joiner() + value;
     }
 
     private String findJsonField(String body, String key, NameSeparator separator) {
@@ -184,7 +296,7 @@ public final class TabNameGenerator {
         m = JSON_SCALAR_FIELD.matcher(body);
         while (m.find()) {
             if (m.group(1).equalsIgnoreCase(key)) {
-                return key + separator.value() + m.group(2);
+                return key + separator.joiner() + m.group(2);
             }
         }
         return null;
@@ -193,11 +305,11 @@ public final class TabNameGenerator {
     private String firstJsonField(String body, NameSeparator separator) {
         Matcher m = JSON_STRING_FIELD.matcher(body);
         if (m.find()) {
-            return m.group(1) + separator.value() + m.group(2);
+            return m.group(1) + separator.joiner() + m.group(2);
         }
         m = JSON_SCALAR_FIELD.matcher(body);
         if (m.find()) {
-            return m.group(1) + separator.value() + m.group(2);
+            return m.group(1) + separator.joiner() + m.group(2);
         }
         return null;
     }
@@ -212,10 +324,10 @@ public final class TabNameGenerator {
 
     /**
      * Sanitizes arbitrary user-selected text (from a request/response editor) into a tab
-     * name, using the same rules {@link #generate} applies to generated names.
+     * name, using the same rules automatic naming applies.
      */
     public String sanitizeForTabName(String raw) {
-        return raw == null ? "request" : sanitize(raw, separator());
+        return raw == null ? "request" : sanitize(raw, config().separator());
     }
 
     /**
@@ -228,12 +340,12 @@ public final class TabNameGenerator {
         if (parts == null || parts.isEmpty()) {
             return "request";
         }
-        NameSeparator separator = separator();
+        NameSeparator separator = config().separator();
         String joined = parts.stream()
                 .filter(Objects::nonNull)
                 .map(part -> normalize(part, separator))
                 .filter(part -> !part.isEmpty())
-                .reduce((a, b) -> a + separator.value() + b)
+                .reduce((a, b) -> a + separator.joiner() + b)
                 .orElse("");
         return truncate(joined.isEmpty() ? "request" : joined, separator);
     }
@@ -280,18 +392,19 @@ public final class TabNameGenerator {
      * like a third name part, "POST_users (2)" doesn't.
      */
     String withOrdinalSuffix(String base, int n) {
+        NameSeparator separator = config().separator();
         String suffix = " (" + n + ")";
         String trimmedBase = base;
         if (trimmedBase.length() + suffix.length() > MAX_LENGTH) {
             trimmedBase = trimmedBase.substring(0, Math.max(0, MAX_LENGTH - suffix.length()));
         }
-        trimmedBase = trimNameEnd(trimmedBase, separator());
+        trimmedBase = trimNameEnd(trimmedBase, separator);
         return trimmedBase.isEmpty() ? "request" + suffix : trimmedBase + suffix;
     }
 
-    private NameSeparator separator() {
-        NameSeparator separator = separatorSource.get();
-        return separator == null ? NameSeparator.HYPHEN : separator;
+    private NamingConfig config() {
+        NamingConfig config = configSource.get();
+        return config == null ? NamingConfig.DEFAULT : config;
     }
 
     private String sanitize(String raw, NameSeparator separator) {
@@ -299,51 +412,61 @@ public final class TabNameGenerator {
         return truncate(cleaned.isEmpty() ? "request" : cleaned, separator);
     }
 
-    /**
-     * Replaces anything that isn't legal in a tab name with the configured separator, collapses
-     * runs of it, and trims it from both ends. Length is deliberately left to
-     * {@link #truncate} so multi-part names can be cleaned piece by piece and capped once.
-     */
     private String normalize(String raw, NameSeparator separator) {
-        // The '-' stays last inside the character class so it's read as a literal rather than
-        // as the start of a range once SPACE contributes an extra allowed character.
-        String illegal = "[^A-Za-z0-9._" + separator.extraAllowedChars() + "-]+";
-        String cleaned = raw.trim()
-                .replaceAll(illegal, Matcher.quoteReplacement(separator.value()))
-                .replaceAll("(?:" + Pattern.quote(separator.value()) + "){2,}",
-                        Matcher.quoteReplacement(separator.value()));
-        return stripSeparator(cleaned, separator);
+        return normalize(raw, separator.filler(), separator.extraAllowedChars());
+    }
+
+    /**
+     * Replaces anything that isn't legal in a tab name with {@code filler}, collapses runs of
+     * it, and trims it from both ends. Length is deliberately left to {@link #truncate} so
+     * multi-part names can be cleaned piece by piece and capped once.
+     *
+     * @param extraAllowed characters to keep beyond the base set, e.g. the separator's own
+     */
+    private String normalize(String raw, String filler, String extraAllowed) {
+        // Built by concatenation rather than quoting because the only characters that ever
+        // reach extraAllowed are space, pipe and slash, all literal inside a character class.
+        // The '-' stays last so it reads as a literal rather than the start of a range.
+        String illegal = "[^A-Za-z0-9._" + extraAllowed + "-]+";
+        String cleaned = raw.trim().replaceAll(illegal, Matcher.quoteReplacement(filler));
+        if (!filler.isEmpty()) {
+            cleaned = cleaned.replaceAll("(?:" + Pattern.quote(filler) + "){2,}", Matcher.quoteReplacement(filler));
+        }
+        return stripEnds(cleaned, filler);
     }
 
     private String truncate(String name, NameSeparator separator) {
         if (name.length() <= MAX_LENGTH) {
             return name;
         }
-        // Cutting mid-name can leave a trailing separator ("api-users-" ), which reads as though
+        // Cutting mid-name can leave a trailing separator ("api-users-"), which reads as though
         // something went missing — drop it.
         String truncated = trimNameEnd(name.substring(0, MAX_LENGTH), separator);
         return truncated.isEmpty() ? "request" : truncated;
     }
 
-    /** Strips trailing separators and whitespace left behind by a mid-name cut, in any order. */
+    /** Strips trailing whitespace, filler and joiner left behind by a mid-name cut, in any order. */
     private String trimNameEnd(String value, NameSeparator separator) {
         String previous;
         String result = value;
         do {
             previous = result;
-            result = stripSeparator(result.strip(), separator);
+            result = stripEnds(result.strip(), separator.joiner());
+            result = stripEnds(result.strip(), separator.filler());
         } while (!result.equals(previous));
         return result;
     }
 
-    private String stripSeparator(String value, NameSeparator separator) {
-        String sep = separator.value();
-        String result = value;
-        while (result.startsWith(sep)) {
-            result = result.substring(sep.length());
+    private String stripEnds(String value, String token) {
+        if (token.isEmpty()) {
+            return value;
         }
-        while (result.endsWith(sep)) {
-            result = result.substring(0, result.length() - sep.length());
+        String result = value;
+        while (result.startsWith(token)) {
+            result = result.substring(token.length());
+        }
+        while (result.endsWith(token)) {
+            result = result.substring(0, result.length() - token.length());
         }
         return result;
     }

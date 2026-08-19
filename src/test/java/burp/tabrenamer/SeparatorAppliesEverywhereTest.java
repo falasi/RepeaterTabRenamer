@@ -22,7 +22,8 @@ class SeparatorAppliesEverywhereTest {
 
     /** Stands in for the settings panel, so a mid-session change can be simulated. */
     private NameSeparator current = NameSeparator.HYPHEN;
-    private final TabNameGenerator generator = new TabNameGenerator(() -> current);
+    private NamingFormat format = NamingFormat.SMART;
+    private final TabNameGenerator generator = new TabNameGenerator(() -> new NamingConfig(current, format));
 
     private static final List<String> STAGED_PARTS = List.of("POST", "users", "admin");
 
@@ -36,6 +37,31 @@ class SeparatorAppliesEverywhereTest {
 
         current = NameSeparator.UNDERSCORE;
         assertEquals("POST_users_admin", generator.joinParts(STAGED_PARTS));
+
+        current = NameSeparator.PIPE;
+        assertEquals("POST | users | admin", generator.joinParts(STAGED_PARTS));
+    }
+
+    @Test
+    void stagedPartsWithPipeReadTheWayTheUserSpecified() {
+        current = NameSeparator.PIPE;
+        assertEquals("POST | emailSharing | postMessage",
+                generator.joinParts(List.of("POST", "emailSharing", "postMessage")));
+    }
+
+    @Test
+    void pipeIsPaddedWithSpacesRatherThanBareForReadability() {
+        current = NameSeparator.PIPE;
+        assertEquals(" | ", NameSeparator.PIPE.joiner());
+        assertEquals("POST | users", generator.joinParts(List.of("POST", "users")));
+    }
+
+    @Test
+    void pipeReplacesIllegalCharactersWithSpacesNotPipes() {
+        // A pipe implies a boundary; stamping one over stray punctuation inside one token would
+        // invent structure that isn't there.
+        current = NameSeparator.PIPE;
+        assertEquals("session_id abc123", generator.sanitizeForTabName("session_id: abc123"));
     }
 
     @Test
@@ -49,6 +75,9 @@ class SeparatorAppliesEverywhereTest {
 
         current = NameSeparator.UNDERSCORE;
         assertEquals("POST_users", generator.joinParts(two));
+
+        current = NameSeparator.PIPE;
+        assertEquals("POST | users", generator.joinParts(two));
     }
 
     @Test
@@ -61,6 +90,9 @@ class SeparatorAppliesEverywhereTest {
 
         current = NameSeparator.UNDERSCORE;
         assertEquals("user_bob", generator.generate("POST", "/api", "URL_ENCODED", "user=bob", "example.com"));
+
+        current = NameSeparator.PIPE;
+        assertEquals("user | bob", generator.generate("POST", "/api", "URL_ENCODED", "user=bob", "example.com"));
     }
 
     @Test
@@ -73,6 +105,40 @@ class SeparatorAppliesEverywhereTest {
 
         current = NameSeparator.UNDERSCORE;
         assertEquals("session_id_abc123", generator.sanitizeForTabName("session_id: abc123"));
+    }
+
+    @Test
+    void theAutomaticFormatPreferenceAlsoReachesTheSharedPath() {
+        format = NamingFormat.METHOD_AND_PATH;
+        assertEquals("POST | /apps/emailShare/postMessage",
+                generator.generate("POST", "/apps/emailShare/postMessage?mailboxid=123", "NONE", "", "example.com"));
+
+        format = NamingFormat.LAST_PATH_SEGMENT;
+        assertEquals("postMessage",
+                generator.generate("POST", "/apps/emailShare/postMessage?mailboxid=123", "NONE", "", "example.com"));
+
+        format = NamingFormat.SMART;
+        assertEquals("postMessage",
+                generator.generate("POST", "/apps/emailShare/postMessage", "NONE", "", "example.com"));
+    }
+
+    @Test
+    void changingTheFormatTakesEffectWithoutReload() {
+        format = NamingFormat.SMART;
+        assertEquals("api", generator.generate("GET", "/api", "NONE", "", "example.com"));
+        format = NamingFormat.METHOD_AND_PATH;
+        assertEquals("GET | /api", generator.generate("GET", "/api", "NONE", "", "example.com"));
+    }
+
+    @Test
+    void selectionNamingIgnoresTheAutomaticFormatEntirely() {
+        // Only automatic naming has a format; what you selected is what you get.
+        current = NameSeparator.PIPE;
+        for (NamingFormat any : NamingFormat.values()) {
+            format = any;
+            assertEquals("POST | users", generator.joinParts(List.of("POST", "users")));
+            assertEquals("chosen", generator.sanitizeForTabName("chosen"));
+        }
     }
 
     @Test
@@ -101,6 +167,16 @@ class SeparatorAppliesEverywhereTest {
     }
 
     @Test
+    void duplicateNumberingOnAPipeJoinedName() {
+        current = NameSeparator.PIPE;
+        String base = generator.joinParts(List.of("POST", "emailSharing"));
+        assertEquals("POST | emailSharing", base);
+        assertEquals("POST | emailSharing (2)", generator.uniqueAmong(base, List.of(base)));
+        assertEquals("POST | emailSharing (3)",
+                generator.uniqueAmong(base, List.of(base, "POST | emailSharing (2)")));
+    }
+
+    @Test
     void everyOfferedOptionResolvesBackToItsSeparator() {
         // The panel offers exactly these strings and hands one of them back; if a label can't
         // round-trip, the whole preference silently stops working.
@@ -117,6 +193,15 @@ class SeparatorAppliesEverywhereTest {
             assertEquals(label, new String(label.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
                     java.nio.charset.StandardCharsets.US_ASCII), "label must be pure ASCII: " + label);
         }
+    }
+
+    @Test
+    void addingPipeDoesNotInvalidateAlreadySavedValues() {
+        // The option list grew; every value a previous build could have stored must still resolve.
+        assertEquals(NameSeparator.HYPHEN, NameSeparator.fromSetting("Hyphen").orElseThrow());
+        assertEquals(NameSeparator.SPACE, NameSeparator.fromSetting("Space").orElseThrow());
+        assertEquals(NameSeparator.UNDERSCORE, NameSeparator.fromSetting("Underscore").orElseThrow());
+        assertEquals(NameSeparator.PIPE, NameSeparator.fromSetting("Pipe").orElseThrow());
     }
 
     @Test

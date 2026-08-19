@@ -83,10 +83,9 @@ public final class MessageEditorSelectionHotKeyHandler implements HotKeyHandler 
             List<String> parts = partStore.partsFor(tabKey);
 
             if (!parts.isEmpty()) {
+                // Renaming succeeds silently: the tab title is the confirmation.
                 tabTitler.renameActiveTabOnEdt(nameGenerator.joinParts(parts), true);
                 partStore.clear(tabKey);
-                logging.logToOutput("repeater-tab-renamer: renamed tab from " + parts.size()
-                        + " staged part(s): " + String.join(" | ", parts));
                 return;
             }
 

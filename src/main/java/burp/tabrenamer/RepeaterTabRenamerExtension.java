@@ -50,7 +50,7 @@ public class RepeaterTabRenamerExtension implements BurpExtension {
         api.extension().setName("Repeater Tab Renamer");
 
         NamingSettings settings = NamingSettings.register(api);
-        TabNameGenerator nameGenerator = new TabNameGenerator(settings::separator);
+        TabNameGenerator nameGenerator = new TabNameGenerator(settings::config);
         RepeaterUiLocator locator = new RepeaterUiLocator(
                 api.userInterface().swingUtils().suiteFrame(), api.logging());
         RepeaterTabTitler tabTitler = new RepeaterTabTitler(locator, nameGenerator, api.logging());

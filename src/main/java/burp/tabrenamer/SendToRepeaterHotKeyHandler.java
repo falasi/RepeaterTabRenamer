@@ -88,9 +88,8 @@ public final class SendToRepeaterHotKeyHandler implements HotKeyHandler {
     private void send(Resolved resolved) {
         // Deliberately resolved here rather than at name-generation time: this is the last
         // moment before the tab exists, so the comparison is against the freshest tab list.
-        String name = tabTitler.uniqueNewTabName(resolved.name());
-        repeater.sendToRepeater(resolved.request(), name);
-        logging.logToOutput("repeater-tab-renamer: sent to Repeater as \"" + name + "\".");
+        // Succeeds silently: the new, named Repeater tab is the confirmation.
+        repeater.sendToRepeater(resolved.request(), tabTitler.uniqueNewTabName(resolved.name()));
     }
 
     private Optional<Resolved> resolveFromEditor(MessageEditorHttpRequestResponse editor) {

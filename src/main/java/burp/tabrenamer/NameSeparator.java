@@ -1,7 +1,6 @@
 package burp.tabrenamer;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Stream;
 
@@ -10,37 +9,49 @@ import java.util.stream.Stream;
  * body-derived name ({@code user}+{@code bob}), the multiple selections staged for one name,
  * and the character illegal input is replaced with.
  *
+ * <p>Two distinct roles, which only coincide for some options:
+ * <ul>
+ *   <li>{@link #joiner()} goes <em>between name parts</em>. {@link #PIPE} pads itself with
+ *       spaces here, because {@code POST | users | admin} is far easier to read than
+ *       {@code POST|users|admin}.</li>
+ *   <li>{@link #filler()} replaces runs of characters that aren't legal in a tab name. For
+ *       {@link #PIPE} that's a space, not a pipe: a pipe implies structure, and stamping one
+ *       over every stray punctuation mark inside a single token would invent boundaries that
+ *       aren't there ({@code session_id | abc123} for what is really one value).</li>
+ * </ul>
+ *
  * <p>Deliberately a small closed set rather than free text: the value is spliced into a
  * regex character class in {@link TabNameGenerator}, so an arbitrary string would need
  * escaping to stay safe, and a separator that is itself stripped as an illegal character
  * (say {@code "/"}) would produce nonsense names.
  *
- * <p>Note this governs separators <em>this extension inserts</em>. Characters already
- * present in the source text are left alone: with {@link #SPACE} selected, a path segment
- * {@code user-profile} still comes through as {@code user-profile}, not {@code user profile}.
- * The number appended to a duplicate name is not affected either — see
- * {@link TabNameGenerator#withOrdinalSuffix}.
+ * <p>This governs separators <em>the extension inserts</em>. Characters already present in the
+ * source text are left alone: with {@link #SPACE} selected, a path segment {@code user-profile}
+ * still comes through as {@code user-profile}. Two things are also deliberately exempt — the
+ * number appended to a duplicate name (always {@code name (2)}, see
+ * {@link TabNameGenerator#withOrdinalSuffix}) and the divider in the
+ * {@link NamingFormat#METHOD_AND_PATH} format (always {@code " | "}).
  *
- * <p>Labels are plain single words on purpose. They double as the value Burp persists and hands
- * back, so anything decorative in them (an example, a dash, a non-ASCII character) becomes part
- * of a string that has to survive a round-trip through Burp's settings store and match exactly.
- * An earlier version used decorated labels and silently fell back to {@link #HYPHEN} when the
- * match failed, which made the whole preference look like it did nothing. Examples now live in
- * the setting's description instead, and {@link #fromSetting} matches leniently.
+ * <p>Labels are plain ASCII words on purpose: they double as the value Burp persists and hands
+ * back, so anything decorative in them becomes part of a string that has to survive a
+ * round-trip through Burp's settings store.
  */
 public enum NameSeparator {
 
-    HYPHEN("Hyphen", "-", ""),
-    SPACE("Space", " ", " "),
-    UNDERSCORE("Underscore", "_", "");
+    HYPHEN("Hyphen", "-", "-", ""),
+    SPACE("Space", " ", " ", " "),
+    UNDERSCORE("Underscore", "_", "_", ""),
+    PIPE("Pipe", " | ", " ", " |");
 
     private final String label;
-    private final String value;
+    private final String joiner;
+    private final String filler;
     private final String extraAllowedChars;
 
-    NameSeparator(String label, String value, String extraAllowedChars) {
+    NameSeparator(String label, String joiner, String filler, String extraAllowedChars) {
         this.label = label;
-        this.value = value;
+        this.joiner = joiner;
+        this.filler = filler;
         this.extraAllowedChars = extraAllowedChars;
     }
 
@@ -49,15 +60,20 @@ public enum NameSeparator {
         return label;
     }
 
-    /** The string actually inserted between name parts. */
-    public String value() {
-        return value;
+    /** Inserted between name parts. */
+    public String joiner() {
+        return joiner;
+    }
+
+    /** Replaces a run of characters that can't appear in a tab name. */
+    public String filler() {
+        return filler;
     }
 
     /**
-     * Characters this separator must add to the "keep as-is" set when sanitizing, so the
-     * separator doesn't immediately get replaced by itself. Only {@link #SPACE} needs it —
-     * {@code -} and {@code _} are already legal tab-name characters.
+     * Characters this separator must add to the "keep as-is" set when sanitizing, so its own
+     * joiner and filler don't immediately get replaced. {@code -} and {@code _} are already
+     * legal tab-name characters, so only the space- and pipe-based options need anything.
      */
     String extraAllowedChars() {
         return extraAllowedChars;
@@ -67,27 +83,8 @@ public enum NameSeparator {
         return Stream.of(values()).map(NameSeparator::label).toList();
     }
 
-    /**
-     * Resolves the value Burp gives back for the setting.
-     *
-     * <p>Lenient by design: an exact match is tried first, then a case-insensitive one, then a
-     * containment check. The last of those matters for anyone upgrading from a build whose
-     * labels carried an example ("Space — api users") — their stored value still resolves to
-     * {@link #SPACE} instead of silently reverting to the default.
-     *
-     * @return empty if the value means nothing to us, so the caller can report it rather than
-     *         quietly substituting a default
-     */
+    /** @see SettingOption#resolve */
     public static Optional<NameSeparator> fromSetting(String value) {
-        if (value == null || value.isBlank()) {
-            return Optional.empty();
-        }
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return Stream.of(values())
-                .filter(separator -> {
-                    String label = separator.label.toLowerCase(Locale.ROOT);
-                    return normalized.equals(label) || normalized.contains(label);
-                })
-                .findFirst();
+        return SettingOption.resolve(values(), NameSeparator::label, value);
     }
 }

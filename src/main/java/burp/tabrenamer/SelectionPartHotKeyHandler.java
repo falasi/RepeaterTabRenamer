@@ -7,7 +7,6 @@ import burp.api.montoya.ui.hotkey.HotKeyEvent;
 import burp.api.montoya.ui.hotkey.HotKeyHandler;
 
 import javax.swing.SwingUtilities;
-import java.util.List;
 import java.util.Optional;
 
 /**
@@ -61,29 +60,16 @@ public final class SelectionPartHotKeyHandler implements HotKeyHandler {
         }
     }
 
+    /**
+     * Staging succeeds silently. What is staged is visible in the right-click menu, which names
+     * the pending result, so echoing every keypress to the Output tab would bury the load-time
+     * banner and any real warning under routine traffic.
+     */
     private void store(String selectedText) {
         try {
-            Object tabKey = tabTitler.activeTabKey();
-            partStore.setPart(tabKey, slot, selectedText);
-
-            List<String> pending = partStore.partsFor(tabKey);
-            if (selectedText == null || selectedText.isBlank()) {
-                logging.logToOutput("repeater-tab-renamer: cleared tab name part " + slot
-                        + " (nothing selected). " + describe(pending));
-            } else {
-                logging.logToOutput("repeater-tab-renamer: tab name part " + slot + " = \""
-                        + selectedText.trim() + "\". " + describe(pending));
-            }
+            partStore.setPart(tabTitler.activeTabKey(), slot, selectedText);
         } catch (Exception e) {
             logging.logToError("repeater-tab-renamer: failed to save tab name part " + slot, e);
         }
-    }
-
-    private String describe(List<String> pending) {
-        if (pending.isEmpty()) {
-            return "No parts staged for this tab.";
-        }
-        return "Staged for this tab: " + String.join(" | ", pending)
-                + " — press the rename hotkey to apply.";
     }
 }
