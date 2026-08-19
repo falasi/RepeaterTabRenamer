@@ -5,78 +5,69 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UsageBannerTest {
 
-    private static final List<Shortcut> FIRST_CHOICE = List.of(
-            new Shortcut("Ctrl+Alt+R", "Rename the current Repeater tab from the selected text."),
-            new Shortcut("Ctrl+Alt+1", "Store the Repeater selection as name part 1"),
-            new Shortcut("Ctrl+Alt+S", "Send to Repeater with automatic naming."));
+    private static final List<Shortcut> REGISTERED = List.of(
+            new Shortcut("Ctrl+Alt+R", "Rename from selection / staged parts"),
+            new Shortcut("Ctrl+Alt+1/2/3", "Stage name parts"),
+            new Shortcut("Ctrl+Alt+Shift+R", "Send to Repeater with automatic naming"));
 
     @Test
     void showsTheShortcutsThatActuallyRegistered() {
-        String banner = UsageBanner.render(FIRST_CHOICE, false, false);
+        String banner = UsageBanner.render("1.2.0", REGISTERED);
         assertTrue(banner.contains("Ctrl+Alt+R"));
-        assertTrue(banner.contains("Ctrl+Alt+1"));
-        assertTrue(banner.contains("Ctrl+Alt+S"));
+        assertTrue(banner.contains("Ctrl+Alt+1/2/3"));
+        assertTrue(banner.contains("Ctrl+Alt+Shift+R"));
     }
 
     @Test
-    void showsAFallbackComboRatherThanTheRequestedOne() {
-        // Ctrl+Alt+R was taken, so registration fell back — the banner must not tell the user to
-        // press a key that does nothing.
-        List<Shortcut> fellBack = List.of(
-                new Shortcut("Ctrl+Shift+R", "Rename the current Repeater tab from the selected text."));
-        String banner = UsageBanner.render(fellBack, false, false);
+    void showsAFallbackComboRatherThanThePreferredOne() {
+        String banner = UsageBanner.render("1.2.0",
+                List.of(new Shortcut("Ctrl+Shift+R", "Rename from selection / staged parts")));
         assertTrue(banner.contains("Ctrl+Shift+R"));
-        assertFalse(banner.contains("Ctrl+Alt+R"));
+        assertFalse(banner.contains("Ctrl+Alt+R"), "must not advertise a combo that never registered");
     }
 
     @Test
-    void marksHotkeysThatCouldNotRegisterAndExplainsWhy() {
-        String unsupported = UsageBanner.render(
-                List.of(new Shortcut("(unavailable)", "Rename the current Repeater tab.")), true, false);
-        assertTrue(unsupported.contains("(unavailable)"));
-        assertTrue(unsupported.contains("montoya-api 2025.12"));
-
-        String failed = UsageBanner.render(
-                List.of(new Shortcut("(unregistered)", "Rename the current Repeater tab.")), false, true);
-        assertTrue(failed.contains("(unregistered)"));
-        assertTrue(failed.contains("already bound to something"));
+    void marksAnUnusableHotkeyAsUnavailable() {
+        String banner = UsageBanner.render("1.2.0",
+                List.of(new Shortcut(UsageBanner.UNAVAILABLE, "Send to Repeater with automatic naming")));
+        assertTrue(banner.contains("(unavailable)"));
     }
 
     @Test
-    void omitsTheFallbackNotesWhenEverythingRegistered() {
-        String banner = UsageBanner.render(FIRST_CHOICE, false, false);
-        assertFalse(banner.contains("montoya-api 2025.12"));
-        assertFalse(banner.contains("already bound to something"));
+    void includesTheVersionWhenKnownAndOmitsItOtherwise() {
+        assertTrue(UsageBanner.render("1.2.0", REGISTERED).startsWith("Repeater Tab Renamer v1.2.0 enabled"));
+        assertTrue(UsageBanner.render(null, REGISTERED).startsWith("Repeater Tab Renamer enabled"));
+        assertTrue(UsageBanner.render("  ", REGISTERED).startsWith("Repeater Tab Renamer enabled"));
     }
 
     @Test
-    void coversEveryFeatureAUserWouldOtherwiseNeedTheReadmeFor() {
-        String banner = UsageBanner.render(FIRST_CHOICE, false, false);
-        assertTrue(banner.contains("Repeater Tab Renamer enabled"));
-        assertTrue(banner.contains("Multi-part naming"));
-        assertTrue(banner.contains("Automatic naming"));
-        assertTrue(banner.contains("admin (2)"), "duplicate example must match the implemented format");
-        assertTrue(banner.contains("Settings > Extensions > Repeater Tab Renamer"));
-        assertFalse(banner.contains("admin-2"), "must not advertise the old suffix format");
+    void pointsAtBothSettingsLocations() {
+        String banner = UsageBanner.render("1.2.0", REGISTERED);
+        assertTrue(banner.contains("Separator: Settings > Extensions > Repeater Tab Renamer"));
+        assertTrue(banner.contains("Settings > Hotkeys"));
     }
 
     @Test
-    void staysShortEnoughToReadInTheOutputTab() {
-        String banner = UsageBanner.render(FIRST_CHOICE, false, false);
-        assertTrue(banner.lines().count() < 35, "banner should stay a concise reference, not a manual");
+    void staysCompact() {
+        // A load-time reminder, not documentation: the explanations live in the README.
+        String banner = UsageBanner.render("1.2.0", REGISTERED);
+        assertEquals(8, banner.lines().count());
+        assertFalse(banner.contains("admin (2)"), "duplicate examples belong in the README");
+        assertFalse(banner.contains("Automatic naming"), "fallback naming explanation belongs in the README");
+        assertFalse(banner.contains("Multi-part naming"), "multi-line instructions belong in the README");
     }
 
     @Test
     void alignsTheShortcutColumnAcrossMixedLabelWidths() {
-        String banner = UsageBanner.render(
-                List.of(new Shortcut("Ctrl+Alt+R", "Rename."), new Shortcut("(unregistered)", "Send.")),
-                false, true);
-        assertTrue(banner.contains("  Ctrl+Alt+R      Rename."));
-        assertTrue(banner.contains("  (unregistered)  Send."));
+        String banner = UsageBanner.render("1.2.0",
+                List.of(new Shortcut("Ctrl+Alt+R", "Rename."), new Shortcut(UsageBanner.UNAVAILABLE, "Send.")));
+        assertTrue(banner.contains("Ctrl+Alt+R      Rename."));
+        assertTrue(banner.contains("(unavailable)   Send."));
     }
 }

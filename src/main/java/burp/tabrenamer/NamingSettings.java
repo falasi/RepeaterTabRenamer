@@ -7,6 +7,7 @@ import burp.api.montoya.ui.settings.SettingsPanelPersistence;
 import burp.api.montoya.ui.settings.SettingsPanelSetting;
 import burp.api.montoya.ui.settings.SettingsPanelWithData;
 
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -16,8 +17,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link SettingsPanelPersistence#USER_SETTINGS} persists the choice across restarts and
  * projects without this extension writing any storage code of its own.
  *
- * <p>Values are read live on every use rather than cached, so changing the separator takes
- * effect on the next request with no reload. Reads are cheap (an in-memory lookup in Burp).
+ * <p>The value is read live on every use rather than cached, so changing the separator takes
+ * effect on the very next name with no reload. Reads are an in-memory lookup in Burp.
+ *
+ * <p>Anything unexpected here is reported rather than absorbed. A value that doesn't resolve is
+ * logged once with the raw text: silently falling back to the default is what made an earlier
+ * label-matching bug invisible, where the preference appeared to be ignored with nothing in the
+ * logs to explain it.
  *
  * <p>The settings-panel API postdates the oldest Burp this extension supports, so registration
  * is wrapped the same way hotkey registration is: on an older release the panel simply doesn't
@@ -25,14 +31,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class NamingSettings {
 
-    static final String SEPARATOR_SETTING = "Join generated name parts with";
+    static final String SEPARATOR_SETTING = "Name separator";
     private static final String SEPARATOR_DESCRIPTION =
-            "Used between the pieces of an automatically generated name, before a duplicate's "
-                    + "number, and between multiple saved selections.";
+            "Joins the pieces of a generated name and replaces characters that aren't allowed in "
+                    + "a tab name. Hyphen: api-users. Space: api users. Underscore: api_users. "
+                    + "A duplicate tab's number is always \"name (2)\", whichever is chosen.";
+
+    private static final NameSeparator DEFAULT_SEPARATOR = NameSeparator.HYPHEN;
 
     private final SettingsPanelWithData panel;
     private final Logging logging;
     private final AtomicBoolean readFailureLogged = new AtomicBoolean();
+    private final AtomicBoolean unresolvedValueLogged = new AtomicBoolean();
 
     private NamingSettings(SettingsPanelWithData panel, Logging logging) {
         this.panel = panel;
@@ -51,31 +61,41 @@ public final class NamingSettings {
                             SEPARATOR_SETTING,
                             SEPARATOR_DESCRIPTION,
                             NameSeparator.labels(),
-                            NameSeparator.HYPHEN.label()))
+                            DEFAULT_SEPARATOR.label()))
                     .build();
             api.userInterface().registerSettingsPanel(panel);
             return new NamingSettings(panel, api.logging());
         } catch (Throwable t) {
             api.logging().logToOutput("repeater-tab-renamer: this Burp version has no extension settings panel; "
-                    + "names will be joined with \"" + NameSeparator.HYPHEN.value() + "\".");
+                    + "names will be joined with \"" + DEFAULT_SEPARATOR.value() + "\".");
             return new NamingSettings(null, api.logging());
         }
     }
 
     public NameSeparator separator() {
         if (panel == null) {
-            return NameSeparator.HYPHEN;
+            return DEFAULT_SEPARATOR;
         }
+        String raw;
         try {
-            return NameSeparator.fromLabel(panel.getString(SEPARATOR_SETTING));
+            raw = panel.getString(SEPARATOR_SETTING);
         } catch (Throwable t) {
-            // Logged once rather than per request: this is read on every generated name, and a
+            // Logged once rather than per request: this is read for every generated name, and a
             // broken settings panel would otherwise flood the Errors tab.
             if (readFailureLogged.compareAndSet(false, true)) {
-                logging.logToError("repeater-tab-renamer: could not read the separator setting; "
-                        + "falling back to \"" + NameSeparator.HYPHEN.value() + "\"", t);
+                logging.logToError("repeater-tab-renamer: could not read the \"" + SEPARATOR_SETTING
+                        + "\" setting; using \"" + DEFAULT_SEPARATOR.value() + "\"", t);
             }
-            return NameSeparator.HYPHEN;
+            return DEFAULT_SEPARATOR;
         }
+
+        Optional<NameSeparator> resolved = NameSeparator.fromSetting(raw);
+        if (resolved.isEmpty() && unresolvedValueLogged.compareAndSet(false, true)) {
+            logging.logToError("repeater-tab-renamer: the \"" + SEPARATOR_SETTING + "\" setting reads \""
+                    + raw + "\", which doesn't match any known option " + NameSeparator.labels()
+                    + "; using \"" + DEFAULT_SEPARATOR.value() + "\". Re-pick the option in "
+                    + "Settings > Extensions > Repeater Tab Renamer.");
+        }
+        return resolved.orElse(DEFAULT_SEPARATOR);
     }
 }

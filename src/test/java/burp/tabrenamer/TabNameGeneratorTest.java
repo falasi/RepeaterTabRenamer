@@ -186,12 +186,6 @@ class TabNameGeneratorTest {
                 .generate("POST", "/", "URL_ENCODED", "user=bob", "example.com"));
     }
 
-    @Test
-    void unknownPersistedSeparatorLabelFallsBackToHyphen() {
-        assertEquals(NameSeparator.HYPHEN, NameSeparator.fromLabel("something else"));
-        assertEquals(NameSeparator.HYPHEN, NameSeparator.fromLabel(null));
-    }
-
     // --- duplicate names --------------------------------------------------------------------
 
     @Test

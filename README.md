@@ -16,7 +16,7 @@ Four ways to get a named tab:
 
 - **Automatically** — when you send a request from Repeater, the tab is named from the request (path, or a body field, or the host). See [Naming rules](#naming-rules).
 - **From a selection in Repeater** — select text, then press `Ctrl+Alt+R` or right-click → **Extensions → Repeater Tab Renamer → Use selection as Repeater tab name**.
-- **From several selections** — stage two or three pieces with `Ctrl+Alt+1` / `2` / `3`, then press `Ctrl+Alt+R` to combine them. See [Multi-part names](#multi-part-names).
+- **From several selections** — stage two or three pieces with `Ctrl+Alt+1` / `2` / `3`, then press `Ctrl+Alt+R` to combine them, joined with your chosen separator. See [Multi-part names](#multi-part-names).
 - **From Proxy HTTP history** — select text (or just a row) and press a hotkey to send it straight to a new, already-named Repeater tab.
 
 Auto-naming only touches tabs that still look auto-generated (a plain number, "Untitled", or empty), so a name you set by hand is never overwritten. The hotkeys always overwrite — they're explicit actions.
@@ -27,11 +27,13 @@ Auto-naming only touches tabs that still look auto-generated (a plain number, "U
 | --- | --- | --- |
 | `Ctrl+Alt+R` | Any focused message editor | In Repeater: renames the active tab from your selection. Anywhere else: sends the message to a new, named Repeater tab. |
 | `Ctrl+Alt+1` `Ctrl+Alt+2` `Ctrl+Alt+3` | Repeater | Stages your selection as that numbered piece of the next name. Press one with nothing selected to clear just that piece. |
-| `Ctrl+Alt+S` | Proxy HTTP history, row selected | Sends the selected request to a new, named Repeater tab. Use this when you've clicked a row but not into its viewer pane. |
+| `Ctrl+Alt+Shift+R` | Proxy HTTP history, row selected | Sends the selected request to a new, named Repeater tab. Use this when you've clicked a row but not into its viewer pane. |
 
-If another extension already claims a combo, registration falls back to `Ctrl+Shift+…` with the same final key. Either way, both commands are rebindable under **Settings → Hotkeys** (search for "Repeater tab name" or "Send to Repeater").
+Combos are claimed first-come, so another extension may already hold one — Hackvertor takes `Ctrl+Alt+S`, which is why that is no longer the default here. Each shortcut has a fallback chain and registration walks it until Burp accepts one, so a clash costs you a different key, never the feature. Whatever actually registered is printed to the **Output** tab at load. All commands are rebindable under **Settings → Hotkeys** (search for "Repeater tab name" or "Send to Repeater").
 
 The extension's **Output** tab logs which combo each hotkey actually registered with at load time. If you've rebound one since, Settings → Hotkeys is the source of truth.
+
+If every candidate for a shortcut is taken, it shows as `(unavailable)` rather than advertising a key that does nothing; bind it by hand under Settings → Hotkeys.
 
 ### Multi-part names
 
@@ -55,9 +57,9 @@ Notes:
 
 | Option | Example |
 | --- | --- |
-| Hyphen (default) | `api-users` |
-| Space | `api users` |
-| Underscore | `api_users` |
+| `Hyphen` (default) | `api-users` |
+| `Space` | `api users` |
+| `Underscore` | `api_users` |
 
 It applies everywhere the extension builds a name — automatic naming, sanitized selections, and multi-part names — and takes effect immediately, no reload. The duplicate-number suffix is deliberately *not* affected: it stays `name (2)` under every separator, so the number never reads as another part of the name. It only affects separators the extension *inserts*: a path segment that already reads `user-profile` stays `user-profile`.
 
@@ -88,7 +90,18 @@ POST users (2)    POST_users (2)
 POST users (3)    POST_users (3)
 ```
 
-On load, the extension prints a short usage summary to its **Output** tab — including the shortcuts as they actually registered — so you don't need this README to get going.
+On load, the extension prints a short reminder to its **Output** tab — the shortcuts as they actually registered, and where the separator setting lives:
+
+```text
+Repeater Tab Renamer v1.2.0 enabled
+
+Ctrl+Alt+R         Rename from selection / staged parts
+Ctrl+Alt+1/2/3     Stage name parts
+Ctrl+Alt+Shift+R   Send to Repeater with automatic naming
+
+Separator: Settings > Extensions > Repeater Tab Renamer
+Hotkeys can be changed under Settings > Hotkeys.
+```
 
 ## Requirements
 

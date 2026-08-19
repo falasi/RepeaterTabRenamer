@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'net.falasi.burp'
-version = '1.1.0'
+version = '1.2.0'
 
 repositories {
     mavenCentral()
@@ -42,4 +42,12 @@ test {
 // classes itself, so a plain jar (no shadowing/fat-jar) is all that's needed.
 jar {
     archiveBaseName = 'repeater-tab-renamer'
+    // Read back at runtime via Package.getImplementationVersion() for the load banner, so the
+    // version is stated in exactly one place.
+    manifest {
+        attributes(
+                'Implementation-Title': 'Repeater Tab Renamer',
+                'Implementation-Version': project.version
+        )
+    }
 }
