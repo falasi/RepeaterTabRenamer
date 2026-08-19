@@ -4,40 +4,27 @@ import burp.api.montoya.logging.Logging;
 
 import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
-import java.awt.Component;
-import java.awt.Container;
-import java.awt.Frame;
-import java.awt.KeyboardFocusManager;
-import java.util.Set;
 
 /**
- * Renames the currently focused Repeater request tab.
+ * Decides what the active Repeater tab should be called and applies it.
  *
- * <p>Montoya's public API only lets an extension name a tab it creates itself via
- * {@code Repeater.sendToRepeater(request, name)} — there is no supported way to rename a tab
- * that already exists (e.g. one created by "Send to Repeater" from Proxy/Target). To handle
- * that case we walk the Swing hierarchy from the current keyboard-focus owner outward looking
- * for the {@link JTabbedPane} that holds the Repeater request tabs, and retitle its selected
- * tab. This relies on Burp's internal UI structure rather than a documented API, so it's a
- * best-effort heuristic that may need adjusting if a future Burp release changes that structure.
+ * <p>This is the naming policy — when a tab may be renamed, and how a name is made unique.
+ * Finding the tab is delegated entirely to {@link RepeaterUiLocator}, which is the only class
+ * that knows anything about Burp's Swing structure. If a lookup fails, nothing is renamed and
+ * nothing is logged as an error: not renaming leaves Burp exactly as it was.
+ *
+ * <p>All Swing access happens on the EDT. Callers on other threads (Burp's HTTP thread, for
+ * automatic naming) go through {@link #renameActiveTab}, which dispatches.
  */
 public final class RepeaterTabTitler {
 
-    private static final Set<String> EDITOR_SUBTAB_TITLES = Set.of(
-            "pretty", "raw", "hex", "render", "json beautifier", "inspector"
-    );
-
-    private static final Set<String> KNOWN_TOOL_TAB_TITLES = Set.of(
-            "dashboard", "target", "proxy", "intruder", "repeater", "sequencer",
-            "decoder", "comparer", "logger", "organizer", "extensions", "learn",
-            "settings", "recorded login replayer", "collaborator", "extender"
-    );
-
-    private final Frame suiteFrame;
+    private final RepeaterUiLocator locator;
+    private final TabNameGenerator nameGenerator;
     private final Logging logging;
 
-    public RepeaterTabTitler(Frame suiteFrame, Logging logging) {
-        this.suiteFrame = suiteFrame;
+    public RepeaterTabTitler(RepeaterUiLocator locator, TabNameGenerator nameGenerator, Logging logging) {
+        this.locator = locator;
+        this.nameGenerator = nameGenerator;
         this.logging = logging;
     }
 
@@ -55,66 +42,69 @@ public final class RepeaterTabTitler {
      *              overwrites the tab's title regardless of its current value.
      */
     public void renameActiveTab(String newName, boolean force) {
-        SwingUtilities.invokeLater(() -> {
-            try {
-                doRename(newName, force);
-            } catch (Exception e) {
-                logging.logToError("repeater-tab-renamer: failed to rename tab", e);
+        SwingUtilities.invokeLater(() -> renameActiveTabOnEdt(newName, force));
+    }
+
+    /**
+     * As {@link #renameActiveTab(String, boolean)}, but for callers already on the EDT that need
+     * the rename to happen in the same event as their own {@link #activeTabKey()} lookup —
+     * otherwise focus could move in between and the rename could land on a different tab than
+     * the one whose staged parts were read.
+     */
+    void renameActiveTabOnEdt(String newName, boolean force) {
+        try {
+            JTabbedPane pane = locator.focusedRequestTabStrip();
+            if (pane == null) {
+                return;
             }
-        });
-    }
-
-    private void doRename(String newName, boolean force) {
-        Component focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
-        if (focusOwner == null) {
-            return;
-        }
-
-        Container current = (focusOwner instanceof Container) ? (Container) focusOwner : focusOwner.getParent();
-        while (current != null && current != suiteFrame) {
-            if (current instanceof JTabbedPane pane) {
-                if (isKnownToolTabStrip(pane)) {
-                    // Walked all the way out to the main tool switcher (Proxy/Repeater/...)
-                    // without finding a request tab strip — bail rather than risk renaming
-                    // the wrong thing.
-                    return;
-                }
-                if (isRequestTabStrip(pane)) {
-                    renameSelectedTab(pane, newName, force);
-                    return;
-                }
+            int index = pane.getSelectedIndex();
+            if (index < 0) {
+                return;
             }
-            current = current.getParent();
-        }
-    }
-
-    private boolean isRequestTabStrip(JTabbedPane pane) {
-        return pane.getTabCount() > 0
-                && !allTitlesIn(pane, EDITOR_SUBTAB_TITLES)
-                && !allTitlesIn(pane, KNOWN_TOOL_TAB_TITLES);
-    }
-
-    private boolean isKnownToolTabStrip(JTabbedPane pane) {
-        return pane.getTabCount() > 0 && allTitlesIn(pane, KNOWN_TOOL_TAB_TITLES);
-    }
-
-    private boolean allTitlesIn(JTabbedPane pane, Set<String> candidates) {
-        for (int i = 0; i < pane.getTabCount(); i++) {
-            String title = pane.getTitleAt(i);
-            if (title == null || !candidates.contains(title.trim().toLowerCase())) {
-                return false;
+            if (!force && !isAutoGeneratedTitle(pane.getTitleAt(index))) {
+                return;
             }
+            // Compared against every other tab, but not this one: re-sending in a tab that
+            // already holds the name must not turn "api-users" into "api-users (2)" each send.
+            pane.setTitleAt(index, nameGenerator.uniqueAmong(newName, locator.titlesOf(pane, index)));
+        } catch (Exception e) {
+            logging.logToError("repeater-tab-renamer: failed to rename tab", e);
         }
-        return true;
     }
 
-    private void renameSelectedTab(JTabbedPane pane, String newName, boolean force) {
-        int index = pane.getSelectedIndex();
-        if (index < 0) {
-            return;
+    /**
+     * Identity of the Repeater tab a rename right now would target, for callers that need to
+     * associate state with "this tab" (see {@link TabNamePartStore}). The Swing component behind
+     * the selected tab is used because it stays the same object for that tab's whole life,
+     * whereas its index shifts as tabs are closed or dragged.
+     *
+     * <p>Must be called on the EDT; returns null off it, or when the tab can't be identified.
+     * Callers must not retain the result — {@link TabNamePartStore} holds it weakly.
+     */
+    Object activeTabKey() {
+        try {
+            JTabbedPane pane = locator.focusedRequestTabStrip();
+            if (pane == null || pane.getSelectedIndex() < 0) {
+                return null;
+            }
+            return pane.getComponentAt(pane.getSelectedIndex());
+        } catch (Exception e) {
+            logging.logToError("repeater-tab-renamer: failed to identify the active Repeater tab", e);
+            return null;
         }
-        if (force || isAutoGeneratedTitle(pane.getTitleAt(index))) {
-            pane.setTitleAt(index, newName);
+    }
+
+    /**
+     * Names for a tab that doesn't exist yet (see {@link SendToRepeaterHotKeyHandler}), made
+     * unique against the tabs Repeater already has. Falls back to the name unchanged when the
+     * existing tabs can't be read.
+     */
+    String uniqueNewTabName(String base) {
+        try {
+            return nameGenerator.uniqueAmong(base, locator.repeaterTabTitles());
+        } catch (Exception e) {
+            logging.logToError("repeater-tab-renamer: failed to check for duplicate tab names", e);
+            return base;
         }
     }
 

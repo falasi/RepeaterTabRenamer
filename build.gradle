@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'net.falasi.burp'
-version = '1.0.1'
+version = '1.3.0'
 
 repositories {
     mavenCentral()
@@ -12,6 +12,13 @@ repositories {
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+}
+
+// Sources contain non-ASCII characters in comments; pin the encoding so a clean checkout
+// compiles identically regardless of the building machine's platform default.
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:all'
 }
 
 dependencies {
@@ -35,4 +42,12 @@ test {
 // classes itself, so a plain jar (no shadowing/fat-jar) is all that's needed.
 jar {
     archiveBaseName = 'repeater-tab-renamer'
+    // Read back at runtime via Package.getImplementationVersion() for the load banner, so the
+    // version is stated in exactly one place.
+    manifest {
+        attributes(
+                'Implementation-Title': 'Repeater Tab Renamer',
+                'Implementation-Version': project.version
+        )
+    }
 }
